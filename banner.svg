@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" font-family="'JetBrains Mono','Courier New',monospace" role="img" aria-label="ShodanSnipe AI">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a0e17"/>
+      <stop offset="1" stop-color="#0d1422"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#39d0d8"/>
+      <stop offset="1" stop-color="#5b8cff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#39d0d8" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#39d0d8" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      @keyframes pulse { 0%,100%{opacity:.35;r:7} 50%{opacity:1;r:10} }
+      @keyframes flow  { from{stroke-dashoffset:60} to{stroke-dashoffset:0} }
+      @keyframes sweep { 0%{transform:translateX(-120px);opacity:0} 8%{opacity:.7} 92%{opacity:.7} 100%{transform:translateX(1320px);opacity:0} }
+      @keyframes fade  { from{opacity:0} to{opacity:1} }
+      .node      { animation: pulse 2.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+      .n2{animation-delay:.35s}.n3{animation-delay:.7s}.n4{animation-delay:1.05s}.n5{animation-delay:1.4s}
+      .link      { stroke-dasharray:6 6; animation: flow 1.4s linear infinite; }
+      .scan      { animation: sweep 5.5s linear infinite; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="300" fill="url(#bg)"/>
+  <!-- faint grid -->
+  <g stroke="#16213a" stroke-width="1">
+    <path d="M0 75H1200M0 150H1200M0 225H1200"/>
+    <path d="M150 0V300M300 0V300M450 0V300M600 0V300M750 0V300M900 0V300M1050 0V300"/>
+  </g>
+  <ellipse cx="600" cy="150" rx="520" ry="150" fill="url(#glow)"/>
+
+  <!-- title -->
+  <text x="600" y="92" text-anchor="middle" font-size="58" font-weight="700" fill="url(#title)" letter-spacing="2">ShodanSnipe&#160;AI</text>
+  <text x="600" y="126" text-anchor="middle" font-size="17" fill="#7d8aa0" letter-spacing="5">AGENTIC ATTACK-SURFACE MANAGEMENT</text>
+
+  <!-- pipeline -->
+  <g transform="translate(0,205)">
+    <line class="link" x1="225" y1="0" x2="375" y2="0" stroke="#39d0d8" stroke-width="2"/>
+    <line class="link" x1="435" y1="0" x2="585" y2="0" stroke="#39d0d8" stroke-width="2"/>
+    <line class="link" x1="645" y1="0" x2="795" y2="0" stroke="#39d0d8" stroke-width="2"/>
+    <line class="link" x1="855" y1="0" x2="975" y2="0" stroke="#39d0d8" stroke-width="2"/>
+
+    <g>
+      <circle class="node"    cx="210" cy="0" r="7" fill="#5b8cff"/>
+      <circle class="node n2" cx="405" cy="0" r="7" fill="#5b8cff"/>
+      <circle class="node n3" cx="615" cy="0" r="7" fill="#f2b34a"/>
+      <circle class="node n4" cx="825" cy="0" r="7" fill="#ff5a63"/>
+      <circle class="node n5" cx="990" cy="0" r="7" fill="#46d39a"/>
+
+      <text x="210" y="28" text-anchor="middle" font-size="13" fill="#9fb0c7">MANAGER</text>
+      <text x="405" y="28" text-anchor="middle" font-size="13" fill="#9fb0c7">RECON</text>
+      <text x="615" y="28" text-anchor="middle" font-size="13" fill="#9fb0c7">NMAP</text>
+      <text x="825" y="28" text-anchor="middle" font-size="13" fill="#9fb0c7">VULN</text>
+      <text x="990" y="28" text-anchor="middle" font-size="13" fill="#9fb0c7">REPORT</text>
+    </g>
+  </g>
+
+  <!-- scanning sweep -->
+  <rect class="scan" x="0" y="0" width="90" height="300" fill="#39d0d8" opacity="0.06"/>
+  <line class="scan" x1="90" y1="0" x2="90" y2="300" stroke="#39d0d8" stroke-width="2" opacity="0.5"/>
+</svg>
