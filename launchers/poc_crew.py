@@ -1,0 +1,590 @@
+"""
+poc_crew.py — ShodanSnipe Parallel Crew Orchestrator v2
+
+Architecture:
+  ┌─────────────────────────────────────────────────────────┐
+  │                    PHASE 1 (PARALLEL)                   │
+  │                                                         │
+  │   RECON AGENT          ║   OSINT AGENT                  │
+  │   ASN → Shodan         ║   Cert transparency            │
+  │   DNS posture          ║   ASN validation               │
+  │   Low-value filter     ║   Cloud assets                 │
+  │   Nmap (skill)         ║   Historical DNS               │
+  │                        ║   Reverse WHOIS                │
+  │                                                         │
+  │   OSINT feeds validated scope + extra queries → RECON   │
+  └─────────────────────────────────────────────────────────┘
+                            │
+  ┌─────────────────────────────────────────────────────────┐
+  │                    PHASE 2 (SEQUENTIAL)                 │
+  │   AUTH AGENT     →    VULN AGENT                        │
+  │   Auth type           CVE lookup                        │
+  │   Exposed paths       CVSS scoring                      │
+  │   JSON secrets        Detection queries                 │
+  │   Posture tags                                          │
+  └─────────────────────────────────────────────────────────┘
+                            │
+  ┌─────────────────────────────────────────────────────────┐
+  │                    PHASE 3 (REPORT)                     │
+  │   Full output from all agents → no truncation           │
+  │   comprehensive (full) or brief (1-page) mode           │
+  └─────────────────────────────────────────────────────────┘
+
+Usage:
+    crewai.bat anthropic
+    crewai.bat anthropic scoped
+    crewai.bat anthropic full
+    python poc_crew.py --provider anthropic --report brief
+    python poc_crew.py --provider anthropic --no-auth
+    python poc_crew.py --provider openai --model gpt-4o
+    python poc_crew.py --provider ollama --model llama3.2
+"""
+from __future__ import annotations
+import os, sys, json, argparse, re, datetime
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ── Bootstrap ─────────────────────────────────────────────────────────────────
+# poc_crew.py lives in launchers/
+# agents/ and tools/ are siblings of launchers/ (one level up)
+LAUNCHERS_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT  = os.path.dirname(LAUNCHERS_DIR)   # shodansnipe/
+ROOT = LAUNCHERS_DIR  # keep ROOT for report saving
+
+for p in [
+    PROJECT_ROOT,
+    os.path.join(PROJECT_ROOT, "agents"),
+    os.path.join(PROJECT_ROOT, "tools"),
+    LAUNCHERS_DIR,
+]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+SHODANSNIPE_URL = os.environ.get("SHODANSNIPE_URL", "http://127.0.0.1:8000")
+AUTONOMY_MODE   = os.environ.get("MCP_AUTONOMY_MODE", "").lower()
+
+def _load_autonomy_mode() -> str:
+    """Read autonomy mode from server (UI setting), fall back to env var."""
+    global AUTONOMY_MODE
+    if AUTONOMY_MODE:  # env var override takes priority
+        return AUTONOMY_MODE
+    try:
+        r = requests.get(f"{SHODANSNIPE_URL}/api/config/autonomy", timeout=5)
+        if r.ok:
+            return r.json().get("mode", "hitl")
+    except Exception:
+        pass
+    return "hitl"  # safe default
+
+
+def _confirm(msg: str) -> bool:
+    if AUTONOMY_MODE == "full":
+        print(f"[AUTO] {msg}")
+        return True
+    ans = input(f"\n{msg} (yes/no): ").strip().lower()
+    return ans in ("yes", "y")
+
+
+def check_server() -> dict:
+    try:
+        r = requests.get(f"{SHODANSNIPE_URL}/api/health", timeout=10)
+        return r.json()
+    except Exception as e:
+        print(f"\n[ERROR] Cannot reach server at {SHODANSNIPE_URL}")
+        print(f"        Start it first: uvicorn server:app --port 8000")
+        print(f"        Error: {e}")
+        sys.exit(1)
+
+
+def get_scope() -> str:
+    try:
+        r = requests.get(f"{SHODANSNIPE_URL}/api/scope", timeout=10)
+        d = r.json()
+        if d.get("is_empty"):          # honor the server's explicit empty flag
+            return ""
+        return d.get("query", "") or d.get("summary", "")
+    except Exception:
+        return ""
+
+
+def get_credits() -> tuple[int, int]:
+    try:
+        r = requests.get(f"{SHODANSNIPE_URL}/api/health", timeout=10)
+        d = r.json()
+        u = d.get("usage", {})
+        return u.get("query_credits_remaining", 0), u.get("query_credits_limit", 100)
+    except Exception:
+        return 0, 0
+
+
+def build_llm(provider: str, model: str | None = None):
+    from crewai import LLM
+
+    if provider == "anthropic":
+        key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not key:
+            print("\n[ERROR] ANTHROPIC_API_KEY not set.")
+            print("        PowerShell: $env:ANTHROPIC_API_KEY = 'sk-ant-...'")
+            sys.exit(1)
+        m = model or "claude-sonnet-4-6"
+        print(f"[LLM] Anthropic — {m}")
+        return LLM(model=m, api_key=key, provider="anthropic")
+
+    elif provider == "openai":
+        key = os.environ.get("OPENAI_API_KEY", "")
+        if not key:
+            print("\n[ERROR] OPENAI_API_KEY not set.")
+            sys.exit(1)
+        m = model or "gpt-4o-mini"
+        print(f"[LLM] OpenAI — {m}")
+        return LLM(model=m, api_key=key)
+
+    elif provider == "ollama":
+        url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+        m = model or "llama3.2"
+        print(f"[LLM] Ollama — {m} at {url}")
+        return LLM(model=f"ollama/{m}", base_url=url)
+
+    else:
+        print(f"[ERROR] Unknown provider: {provider}. Use: anthropic, openai, ollama")
+        sys.exit(1)
+
+
+def run_crew_phase(agents, tasks, verbose=True) -> str:
+    """Run a crew and return string output.
+    
+    Notes:
+    - max_rpm limits LLM calls per minute to avoid Anthropic rate limits
+    - Claude doesn't support assistant prefill (the "force_final_answer" 
+      mechanism in older CrewAI versions). If you hit that error, upgrade:
+      pip install "crewai>=0.80.0"
+    """
+    from crewai import Crew, Process
+    crew = Crew(
+        agents=agents,
+        tasks=tasks,
+        process=Process.sequential,
+        verbose=verbose,
+        max_rpm=10,          # max LLM calls/min — prevents Anthropic 429s
+    )
+    try:
+        result = crew.kickoff()
+        return str(result)
+    except Exception as e:
+        err = str(e)
+        if "assistant message prefill" in err.lower():
+            print(
+                "\n[ERROR] CrewAI 'assistant prefill' error with Claude.\n"
+                "Fix: upgrade CrewAI: pip install 'crewai>=0.80.0'\n"
+                "Or switch provider: crewai.bat openai\n"
+            )
+        elif "maximum iterations" in err.lower():
+            print(
+                "\n[WARN] Agent hit max iterations. Partial results may be available.\n"
+                "Consider: increase max_iter in agent config or simplify the task.\n"
+            )
+        raise
+
+
+def main():
+    # Version check — Claude requires CrewAI >= 0.80.0 to avoid assistant prefill errors
+    try:
+        import crewai
+        version = tuple(int(x) for x in crewai.__version__.split(".")[:2])
+        if version < (0, 80):
+            print(f"[WARN] CrewAI {crewai.__version__} detected. Claude may hit 'assistant prefill' errors.")
+            print("       Upgrade: pip install 'crewai>=0.80.0'")
+    except Exception:
+        pass
+
+    parser = argparse.ArgumentParser(description="ShodanSnipe Crew v2")
+    parser.add_argument("provider", nargs="?", default="anthropic",
+                        choices=["anthropic", "openai", "ollama"])
+    parser.add_argument("mode", nargs="?", default=None,
+                        choices=["hitl", "scoped", "full"])
+    parser.add_argument("--model",   default=None, help="Override LLM model")
+    parser.add_argument("--scope",   default=None, help="Override scope query")
+    parser.add_argument("--report",  default="comprehensive",
+                        choices=["comprehensive", "brief"],
+                        help="Report style: comprehensive (default) or brief")
+    parser.add_argument("--no-auth", action="store_true", help="Skip auth agent")
+    parser.add_argument("--no-nmap", action="store_true", help="Disable nmap")
+    parser.add_argument("--no-osint",   action="store_true", help="Skip OSINT agent")
+    parser.add_argument("--no-archive", action="store_true", help="Skip Wayback/ShodanURI enrichment")
+    args = parser.parse_args()
+
+    # ── Control Center integration ────────────────────────────────────────────
+    # Honor the user's SAVED settings. When the server's Run button launches the crew it
+    # passes CREW_STAGES/CREW_MODULES as env (explicit override). When you run crewai.bat
+    # yourself, no env is set — so we ASK THE SERVER for the saved selection here. Either way
+    # the crew obeys what you chose in the Control Center instead of a hardcoded default.
+    if os.environ.get("CREW_STAGES") is None or os.environ.get("CREW_MODULES") is None:
+        try:
+            if os.environ.get("CREW_STAGES") is None:
+                s = requests.get(f"{SHODANSNIPE_URL}/api/crew/stages", timeout=8).json()
+                os.environ["CREW_STAGES"] = ",".join(s.get("selected", []))
+            if os.environ.get("CREW_MODULES") is None:
+                m = requests.get(f"{SHODANSNIPE_URL}/api/crew/modules", timeout=8).json()
+                os.environ["CREW_MODULES"] = ",".join(m.get("selected", []))
+            print("[Settings] Loaded saved crew selection from the server.")
+        except Exception as e:
+            print(f"[Settings] Could not load saved settings ({e}); using built-in defaults.")
+
+    # Translate the (saved or explicitly-passed) selection onto the existing flags so a toggle
+    # in the GUI actually changes the crew. Empty string = nothing selected = treated as default.
+    _stages = os.environ.get("CREW_STAGES")
+    if _stages:
+        st = {s.strip() for s in _stages.split(",") if s.strip()}
+        if "nmap" not in st:
+            args.no_nmap = True
+    _modules = os.environ.get("CREW_MODULES")
+    if _modules:
+        mods = {m.strip() for m in _modules.split(",") if m.strip()}
+        OSINT_M   = {"cert_transparency", "validate_ownership", "historical_dns",
+                     "reverse_whois", "cloud_asset_discovery"}
+        AUTH_M    = {"analyze_auth", "classify_posture", "json_keyword_scan",
+                     "probe_sensitive_paths"}
+        ARCHIVE_M = {"wayback", "shodan_host_uri"}
+        if not (mods & OSINT_M):
+            args.no_osint = True
+        if not (mods & AUTH_M):
+            args.no_auth = True
+        if not (mods & ARCHIVE_M):
+            args.no_archive = True
+
+    global AUTONOMY_MODE
+    if args.mode:
+        AUTONOMY_MODE = args.mode
+    else:
+        AUTONOMY_MODE = _load_autonomy_mode()
+    print(f"[Mode] {AUTONOMY_MODE.upper()} (from {'CLI override' if args.mode else 'server/env'})")
+    if args.no_nmap:
+        os.environ["ENABLE_NMAP"] = "0"
+    if getattr(args, 'no_archive', False):
+        os.environ["ENABLE_ARCHIVE"] = "0"
+
+    print("=" * 62)
+    print("  ShodanSnipe + CrewAI — Parallel Attack Surface Crew v2")
+    print(f"  Provider : {args.provider}")
+    print(f"  Mode     : {AUTONOMY_MODE.upper()}")
+    print(f"  Report   : {args.report.upper()}")
+    print(f"  OSINT    : {'OFF' if args.no_osint else 'ON (parallel with Recon)'}")
+    print(f"  Nmap     : {'OFF' if args.no_nmap else 'ON (skill in Recon)'}")
+    print("=" * 62)
+
+    if AUTONOMY_MODE == "full":
+        print("\n  [WARNING] FULL AUTONOMOUS — no confirmations.")
+        if not _confirm("  Proceed?"):
+            sys.exit(0)
+
+    # ── Server ────────────────────────────────────────────────────────────────
+    health = check_server()
+    tier = health.get("tier_label", "unknown")
+    cr, ct = get_credits()
+    print(f"\n[OK] Server alive — tier: {tier}")
+    if ct:
+        print(f"[Credits] {cr}/{ct} ({int(100*cr/ct) if ct else 0}%)")
+
+    # ── Scope ─────────────────────────────────────────────────────────────────
+    scope_query = args.scope or get_scope()
+    if not scope_query:
+        print("\n[ERROR] No scope defined.")
+        print("        Set scope in the UI: http://127.0.0.1:8000")
+        print("        Or: python poc_crew.py --scope 'org:\"Acme Corp\" hostname:acme.com'")
+        sys.exit(1)
+
+    m = re.search(r'org:"([^"]+)"', scope_query)
+    target_org = m.group(1) if m else scope_query[:40]
+    print(f"[Scope]  {scope_query}")
+    print(f"[Target] {target_org}")
+
+    # ── Pre-flight: show exactly what's about to run ──────────────────────────
+    _mods = [k for k in os.environ.get("CREW_MODULES", "").split(",") if k]
+    print("\n" + "-" * 62)
+    print("  PRE-FLIGHT — what will run (from your saved Control Center settings)")
+    print("-" * 62)
+    print(f"  Scope     : {scope_query}")
+    print(f"  Report    : {args.report}")
+    print(f"  Stages    : recon"
+          f"{'' if args.no_nmap else ' + nmap'}"
+          f"{' + vuln' }"
+          f" + report")
+    print(f"  OSINT     : {'OFF' if args.no_osint else 'ON'}")
+    print(f"  Nmap      : {'OFF' if args.no_nmap else 'ON'}")
+    print(f"  Auth      : {'OFF' if args.no_auth else 'ON'}")
+    print(f"  Archive   : {'OFF' if args.no_archive else 'ON'}")
+    print(f"  Modules   : {len(_mods)} enabled" + (f" ({', '.join(_mods)})" if _mods else ""))
+    print(f"  Autonomy  : {AUTONOMY_MODE.upper()}")
+    print("-" * 62)
+
+    if AUTONOMY_MODE == "hitl" and not _confirm(f"\nProceed with scope: {scope_query}?"):
+        sys.exit(0)
+
+    # ── Build LLM ─────────────────────────────────────────────────────────────
+    llm = build_llm(args.provider, args.model)
+
+    # ── Import agents ─────────────────────────────────────────────────────────
+    from manager_agent    import build_manager_agent, build_manager_hunt_plan_task, build_manager_correlation_task
+    from recon_agent      import build_recon_agent,   build_recon_tasks
+    from osint_agent      import build_osint_agent,   build_osint_tasks
+    from nmap_recon_agent import build_nmap_agent,    build_nmap_tasks
+    from auth_agent       import build_auth_agent,    build_auth_tasks
+    from vuln_agent       import build_vuln_agent,    build_vuln_tasks
+    from report_agent     import build_report_agent,  build_report_tasks
+    from nmap_tool        import get_nmap_tools
+    from archive_tool     import get_archive_tools
+
+    nmap_tools    = get_nmap_tools()
+    archive_tools = get_archive_tools()
+
+    # Shodan API key for shodan_host_uri tool
+    shodan_key = os.environ.get("SHODAN_API_KEY", "")
+    if not shodan_key:
+        try:
+            import requests as _req
+            r = _req.get(f"{SHODANSNIPE_URL}/api/config/api-key", timeout=5)
+            if r.ok:
+                shodan_key = r.json().get("key", "")
+        except Exception:
+            pass
+    if shodan_key:
+        os.environ["SHODAN_API_KEY"] = shodan_key
+        print(f"[Shodan] API key loaded ({shodan_key[:8]}...)")
+    else:
+        print("[Shodan] WARNING: No API key found — shodan_host_uri tool will be limited")
+
+    manager_agent = build_manager_agent(llm)
+    recon_agent   = build_recon_agent(llm, extra_tools=nmap_tools)
+    osint_agent   = build_osint_agent(llm) if not args.no_osint else None
+    nmap_agent    = build_nmap_agent(llm)  if nmap_tools         else None
+    auth_agent    = build_auth_agent(llm)  if not args.no_auth   else None
+    vuln_agent    = build_vuln_agent(llm, extra_tools=archive_tools)
+    report_agent  = build_report_agent(llm)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE 1: RECON + OSINT in PARALLEL
+    # ══════════════════════════════════════════════════════════════════════════
+    print("\n" + "=" * 62)
+    print("  PHASE 0 — MANAGER: scope expansion + hunt plan")
+    print("=" * 62)
+
+    hunt_plan_task = build_manager_hunt_plan_task(manager_agent, target_org, scope_query)
+    manager_plan_output = run_crew_phase([manager_agent], [hunt_plan_task])
+    print(f"\n[MANAGER] Hunt plan complete — {len(manager_plan_output)} chars")
+
+    print("\n" + "=" * 62)
+    print("  PHASE 1 — OSINT first, then Recon uses validated intel")
+    print("=" * 62)
+
+    recon_output = ""
+    osint_output = ""
+
+    if osint_agent:
+        # ── OSINT runs FIRST to validate scope and build intel package ──
+        print("[P1] OSINT agent running first — validating scope and building intel package...")
+        osint_tasks = build_osint_tasks(osint_agent, target_org, scope_query)
+        osint_output = run_crew_phase([osint_agent], osint_tasks)
+        print(f"\n[OSINT] Complete — {len(osint_output)} chars")
+
+        # Extract the intel_package from OSINT output
+        intel_package = ""
+        try:
+            # Try to parse as JSON first
+            osint_json = json.loads(osint_output)
+            intel_pkg = osint_json.get("intel_package", {})
+            query_pkg = osint_json.get("shodan_query_package", [])
+            intel_package = json.dumps({
+                "intel_package": intel_pkg,
+                "shodan_query_package": query_pkg,
+            })
+            q_count = len(query_pkg)
+            print(f"[P1] OSINT produced {q_count} prioritised Shodan queries for Recon")
+        except Exception:
+            # Fall back: pass raw OSINT output as intel context
+            intel_package = osint_output[:4000]
+            print("[P1] OSINT output parsed as raw text (not JSON) — passing to Recon")
+
+        # ── Merge Manager creative pivots INTO intel_package before Recon starts ──
+        # Creative pivots are hypotheses, not a separate pass — Recon gets them
+        # alongside OSINT intel so it can discover more freely in one pass.
+        try:
+            plan_json = json.loads(manager_plan_output)
+            pivots = plan_json.get("hunt_plan", {}).get("creative_pivots", [])
+            pivot_queries = [p for p in pivots if p.get("shodan_query")]
+            blind_spots   = plan_json.get("hunt_plan", {}).get("top_5_blind_spots", [])
+            hypotheses    = plan_json.get("hunt_plan", {}).get("hypotheses", [])
+            if pivot_queries or blind_spots:
+                # Inject manager intelligence into the OSINT intel package
+                # so Recon starts with ALL available context in one shot
+                try:
+                    base = json.loads(intel_package) if intel_package else {}
+                except Exception:
+                    base = {"raw_osint": intel_package[:2000]}
+                base["manager_creative_pivots"] = [
+                    {"query": p["shodan_query"], "priority": "HIGH",
+                     "why": p.get("why", "Manager hypothesis")}
+                    for p in pivot_queries[:8]
+                ]
+                base["manager_blind_spots"]  = blind_spots[:5]
+                base["manager_hypotheses"]   = hypotheses[:5]
+                intel_package = json.dumps(base)
+                print(f"[P1] Merged {len(pivot_queries)} Manager pivots + "
+                      f"{len(blind_spots)} blind spots into Recon seed")
+        except Exception as e:
+            print(f"[WARN] Could not merge Manager pivots: {e}")
+
+        # ── RECON: one pass, full context (OSINT + Manager + creative) ──────
+        print("[P1] Recon agent running — OSINT intel + Manager pivots merged...")
+        recon_tasks = build_recon_tasks(recon_agent, target_org, scope_query,
+                                        osint_intel=intel_package)
+        recon_output = run_crew_phase([recon_agent], recon_tasks)
+        print(f"\n[RECON] Complete — {len(recon_output)} chars")
+
+    else:
+        # No OSINT — still use Manager's scope expansion
+        print("[P1] OSINT disabled — using Manager scope expansion for Recon seed...")
+        try:
+            plan_json = json.loads(manager_plan_output)
+            pivots = plan_json.get("hunt_plan", {}).get("creative_pivots", [])
+            pivot_queries = [p.get("shodan_query","") for p in pivots if p.get("shodan_query")]
+            intel_seed = json.dumps({
+                "shodan_query_package": [
+                    {"query": scope_query, "priority": "HIGH", "why": "primary scope"},
+                    *[{"query": q, "priority": "HIGH", "why": "Manager pivot"}
+                      for q in pivot_queries[:4]]
+                ]
+            })
+        except Exception:
+            intel_seed = ""
+
+        recon_tasks = build_recon_tasks(recon_agent, target_org, scope_query,
+                                        osint_intel=intel_seed)
+        recon_output = run_crew_phase([recon_agent], recon_tasks)
+        print(f"\n[RECON] Complete — {len(recon_output)} chars")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE 1.5: NMAP — live confirmation of Shodan findings
+    # ══════════════════════════════════════════════════════════════════════════
+    nmap_output = ""
+    if nmap_agent:
+        print("\n" + "=" * 62)
+        print("  PHASE 1.5 — NMAP: live port confirmation + triage")
+        print("=" * 62)
+        # Pass the recon task as prior context so nmap agent knows which IPs to scan
+        nmap_tasks = build_nmap_tasks(nmap_agent, prior_task=None)
+        nmap_output = run_crew_phase([nmap_agent], nmap_tasks)
+        print(f"\n[NMAP] Complete — {len(nmap_output)} chars")
+    else:
+        print("\n[NMAP] Skipped — nmap binary not available or ENABLE_NMAP=0")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE 2: AUTH + VULN (sequential)
+    # ══════════════════════════════════════════════════════════════════════════
+    print("\n" + "=" * 62)
+    print("  PHASE 2 — AUTH ANALYSIS + VULN INTEL")
+    print("=" * 62)
+
+    auth_output = ""
+    vuln_output = ""
+    agents_p2   = []
+    tasks_p2    = []
+
+    if auth_agent:
+        # Pass nmap confirmed output so auth agent focuses on LIVE ports
+        combined_recon = recon_output + ("\n\n=== NMAP LIVE CONFIRMATION ===\n" + nmap_output if nmap_output else "")
+        auth_tasks = build_auth_tasks(auth_agent, combined_recon)
+        agents_p2.append(auth_agent)
+        tasks_p2.extend(auth_tasks)
+
+    vuln_tasks = build_vuln_tasks(vuln_agent, recon_output, auth_output)
+    agents_p2.append(vuln_agent)
+    tasks_p2.extend(vuln_tasks)
+
+    if agents_p2:
+        p2_output = run_crew_phase(agents_p2, tasks_p2)
+        if auth_agent:
+            mid = len(p2_output) // 2
+            auth_output = p2_output[:mid]
+            vuln_output = p2_output[mid:]
+        else:
+            vuln_output = p2_output
+        print(f"\n[P2] Auth: {len(auth_output)} chars | Vuln: {len(vuln_output)} chars")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE 2.5: MANAGER CORRELATION — cross-agent pattern detection
+    # ══════════════════════════════════════════════════════════════════════════
+    print("\n" + "=" * 62)
+    print("  PHASE 2.5 — MANAGER: cross-agent correlation")
+    print("=" * 62)
+
+    # Include nmap triage output in manager correlation for cross-agent hits
+    combined_recon_for_corr = recon_output + ("\n" + nmap_output if nmap_output else "")
+    correlation_task = build_manager_correlation_task(
+        manager_agent,
+        osint_output=osint_output,
+        recon_output=combined_recon_for_corr,
+        auth_output=auth_output,
+        vuln_output=vuln_output,
+    )
+    manager_correlation_output = run_crew_phase([manager_agent], [correlation_task])
+    print(f"\n[MANAGER-CORRELATION] Complete — {len(manager_correlation_output)} chars")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE 3: REPORT — full output, no truncation
+    # ══════════════════════════════════════════════════════════════════════════
+    print("\n" + "=" * 62)
+    print(f"  PHASE 3 — {args.report.upper()} REPORT")
+    print("=" * 62)
+
+    report_tasks = build_report_tasks(
+        agent            = report_agent,
+        recon_output     = recon_output,              # full, no truncation
+        osint_output     = osint_output,              # full
+        auth_output      = auth_output,               # full
+        vuln_output      = vuln_output,               # full
+        manager_plan     = manager_plan_output,       # hunt plan
+        manager_summary  = manager_correlation_output,# cross-agent executive summary
+        target_org       = target_org,
+        scope_query      = scope_query,
+        report_style     = args.report,
+    )
+    final_report = run_crew_phase([report_agent], report_tasks)
+
+    # ── Save report ───────────────────────────────────────────────────────────
+    ts       = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_org = re.sub(r'[^\w]', '_', target_org)[:30]
+    style    = "brief" if args.report == "brief" else "full"
+    fname    = f"report_{safe_org}_{style}_{ts}.md"
+    fpath    = os.path.join(ROOT, fname)
+
+    with open(fpath, "w", encoding="utf-8") as f:
+        f.write(f"# ShodanSnipe Assessment — {target_org}\n")
+        f.write(f"**Generated:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"**Scope:** `{scope_query}`\n")
+        f.write(f"**Style:** {args.report}\n")
+        f.write(f"**Provider:** {args.provider}\n\n---\n\n")
+        f.write(final_report)
+
+    print("\n" + "=" * 62)
+    print(f"  DONE — {args.report.upper()} REPORT SAVED")
+    print(f"  File: {fpath}")
+    print("=" * 62)
+
+    # ── Also send it to the server so the GUI "▤ Report" panel renders it as HTML ─
+    try:
+        r = requests.post(f"{SHODANSNIPE_URL}/api/report/save",
+                          json={"markdown": final_report, "target_org": target_org},
+                          timeout=15)
+        if r.ok:
+            print(f"  GUI: report posted to {SHODANSNIPE_URL} — open the ▤ Report panel")
+    except Exception as e:
+        print(f"  GUI: could not post report ({e}) — the .md file above is still saved")
+    # Print preview
+    preview = final_report[:3000]
+    print(preview)
+    if len(final_report) > 3000:
+        print(f"\n... [{len(final_report) - 3000} more chars in file]")
+
+
+if __name__ == "__main__":
+    main()
