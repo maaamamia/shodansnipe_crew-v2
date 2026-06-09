@@ -69,6 +69,13 @@ deep assessment — without editing code.
 
 ## 2. Architecture
 
+<p align="center">
+  <img src="assets/flow.svg" alt="ShodanSnipe communication flow" width="100%"/>
+</p>
+
+<details>
+<summary>Same flow as a Mermaid diagram</summary>
+
 ```mermaid
 flowchart LR
     subgraph Front doors
@@ -84,6 +91,7 @@ flowchart LR
     CR --> SH[("Shodan / OSINT / NVD")]
     S --> RP["📄 Threat report (HTML)"]
 ```
+</details>
 
 The crew talks to the server over HTTP (REST + `/mcp`); it does **not** import the server.
 **Start the server first, then run the crew.**
