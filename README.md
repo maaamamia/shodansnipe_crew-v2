@@ -211,7 +211,7 @@ export CREW_CMD="launchers/crewai_env/bin/python launchers/poc_crew.py anthropic
 set     CREW_CMD=crewai.bat anthropic                                               # Windows
 ```
 
-**Confirm the server is the current build** (ends the "is this the old `server.py`?" guessing):
+**Confirm the server is the current build**:
 ```bash
 curl http://127.0.0.1:8000/api/version
 #  -> shows the file path it loaded + every feature route with all_present: true/false
