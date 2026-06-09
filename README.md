@@ -40,7 +40,7 @@ net:203.0.113.0/24    Auth · Vuln · Threat-Intel · Report    a human should t
 3. [The agent team](#3-the-agent-team)
 4. [Install](#4-install)
 5. [Running — three modes](#5-running--three-modes)
-6. [The Control Center (GUI)](#6-the-control-center-gui)
+6. [The GUI — views & how to use](#6-the-gui--views--how-to-use)
 7. [Scan profiles](#7-scan-profiles)
 8. [Pick your crew (stages)](#8-pick-your-crew-stages)
 9. [Capability modules (28)](#9-capability-modules-28)
@@ -175,9 +175,69 @@ curl http://127.0.0.1:8000/api/version
 #  -> shows the file path it loaded + every feature route with all_present: true/false
 ```
 
+### Server and crew are two separate processes — that's expected
+
+The **server runs continuously** in one terminal; the **crew is a separate run** you launch
+when you want an assessment. Running both at once is normal (they're different processes) —
+the crew just talks to the server over HTTP.
+
+The one catch: the **crew must run in the CrewAI virtualenv** (Python 3.12 with `crewai`
+installed), which is usually *not* the interpreter running the server. Launching the crew with
+the server's Python (e.g. 3.14) fails with missing `crewai`. So:
+
+```
+Terminal 1 (server):   python server.py                     # or cli.py serve — keep it running
+Terminal 2 (crew):     crewai.bat anthropic                 # activates the 3.12 venv, runs the crew
+```
+
+`crewai.bat` exists precisely to activate the right venv — **use it to run the crew.** To make
+the GUI's **Run Crew** button use the venv too, point the server at it:
+```powershell
+set CREW_CMD=crewai.bat anthropic     # the server spawns this for /api/crew/run
+```
+(`python cli.py crew` only works if you run it from the CrewAI venv; otherwise prefer the `.bat`.)
+
 ---
 
-## 6. The Control Center (GUI)
+## 6. The GUI — views & how to use
+
+The web console is a **panel workspace**: a top nav bar opens draggable, resizable neon
+panels. Open the console at `http://127.0.0.1:8000` (served by `server.py`).
+
+### Views (nav-bar panels)
+
+| Button | Panel | What it's for |
+|--------|-------|---------------|
+| **AI** | Assistant | Natural-language → Shodan query help, goal-to-query, explanations |
+| **Query** | Query builder | Compose/run a Shodan search, pick filters and limits |
+| **Results** | Results view | The hosts from your last search — IP, ports, product, risk, in/out-of-scope |
+| **History** | Saved searches | Recent queries + result counts; reload a past search |
+| **⚙ MCP** | MCP panel | MCP connection + feeds |
+| **⚑ CVE** | CVE Intel | Paste an advisory → extracted CVE IDs + scoped detection queries |
+| **⊛ Findings** | Findings | De-duplicated findings across all your searches |
+| **◈ Control** | **Control Center** | Profiles, crew, 28 modules, limits, MCP tools, save/run/reset *(new)* |
+| **▤ Report** | **Report** | The latest generated threat report, rendered as HTML *(new)* |
+
+Layout tip: drag a panel by its title bar, resize from the corner handle, **⊞** resets the
+layout, and **⊡ Views** / **⊟ WS** save and restore arrangements.
+
+### How to use it — a normal run
+
+1. **Add your Shodan key** (⚙ Config / first-run prompt) and confirm the tier pill shows your plan.
+2. **Set your scope** — orgs, domains, CIDRs, ASNs (the crew and all tools are gated to it).
+3. **Open ◈ Control**, pick a **profile** (Quick / Comprehensive / All), adjust crew/modules/limits
+   if you want, and **Save settings**.
+4. **Run** — either click **Run Crew on Current Results** in the Control Center, or run the
+   crew from a terminal (see §5). Watch progress in `crew_run.log`.
+5. **Read the report** — open **▤ Report**; it shows the latest report the crew posted, as HTML.
+6. **Drill in** — use **Results** and **⊛ Findings** to inspect hosts, and **⚑ CVE** to turn
+   advisories into detection queries.
+
+For an ad-hoc search without the crew: **Query** → run → review in **Results**.
+
+---
+
+## 6b. The Control Center panel
 
 The Control Center is where you drive everything without touching code. Open it at:
 
