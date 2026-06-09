@@ -208,6 +208,7 @@ set CREW_CMD=crewai.bat anthropic     # the server spawns this for /api/crew/run
 ---
 
 ## 6. The GUI — views & how to use
+<img width="1271" height="674" alt="image" src="https://github.com/user-attachments/assets/039c9043-0581-4eff-84ed-77448305d3f4" />
 
 The web console is a **panel workspace**: a top nav bar opens draggable, resizable neon
 panels. Open the console at `http://127.0.0.1:8000` (served by `server.py`).
