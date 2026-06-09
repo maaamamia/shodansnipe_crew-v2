@@ -80,7 +80,7 @@ deep assessment — without editing code.
 flowchart LR
     subgraph Front doors
       G["🖥️ Web console<br/>+ Control Center"]
-      C["⌨️ cli.py"]
+      C["⌨️ crewai.bat"]
       M["🤖 MCP client<br/>(Claude Desktop / CrewAI)"]
     end
     S[("server.py<br/>REST · /mcp · settings · SQLite")]
@@ -137,17 +137,23 @@ flowchart TD
 - **Nmap** *(optional — only for the active Nmap stage)*
 
 ```bash
-# 1) dependencies (fastapi, uvicorn, shodan, crewai, fastmcp, …)
+# 1) dependencies for the server (fastapi, uvicorn, shodan, fastmcp, …)
 pip install -r requirements.txt
 
 # 2) make sure fastmcp is in the SAME interpreter that runs the server
 python -c "import importlib.util; print('fastmcp:', importlib.util.find_spec('fastmcp') is not None)"
 #   False?  ->  python -m pip install fastmcp     (use the exact python that runs server.py)
 
-# 3) drop tools/archive_tool.py into your tools/ folder
+# 3) build the crew's 3.12 venv (Windows) — one time
+cd launchers && setup_crewai.bat   # creates launchers/crewai_env + installs crewai + nmap check
+
+# 4) drop tools/archive_tool.py into tools/
 #    (backs the wayback + shodan_host_uri modules; without it the Vuln agent logs
 #     "archive_tool not available" and those two modules are silently off)
 ```
+
+The server and the crew use **different interpreters**: the server runs on your system Python;
+the crew runs in `launchers/crewai_env` (3.12). `setup_crewai.bat` builds that venv — see §5.
 
 **Nmap (optional).** Install only if you want the active stage; otherwise leave the Nmap
 stage off and everything else runs. Windows: download the `.exe` and tick *Add to PATH*, or
@@ -158,60 +164,70 @@ server from an **Administrator** prompt (SYN scans need it). Verify: `nmap --ver
 
 ## 5. Running — three modes
 
-The same engine, three front doors — all read the **same** server-side settings, so a choice
-made in the GUI is honoured by the CLI and MCP clients.
+Three front doors onto the same engine; all share the same server-side scope and settings.
 
-| Mode | Command | When |
-|------|---------|------|
-| 🖥️ **GUI** | `python cli.py serve` → open the console | Interactive: scope, search, pick crew, read reports |
-| ⌨️ **CLI** | `python cli.py crew --profile comprehensive` | Scripted / headless / terminal-driven |
+| Mode | How | When |
+|------|-----|------|
+| 🖥️ **GUI** | start the server, open the console | Interactive: scope, search, pick crew, read reports |
+| ⌨️ **Crew** | run the orchestrator in a second terminal | Run the full assessment pipeline |
 | 🤖 **AI / MCP** | point an MCP client at `http://127.0.0.1:8000/mcp` | Drive the 6 tools from Claude Desktop, Cursor, CrewAI |
 
-```bash
-# GUI + MCP (one process serves REST, /mcp, and the UI)
-python cli.py serve                 # or: python server.py
-#   set SHODANSNIPE_PASSPHRASE to skip the DB passphrase prompt
+The **server runs continuously** in one terminal; the **crew is a separate run** in another.
+They're separate processes that talk over HTTP (the crew never imports the server), so running
+both at once is normal.
 
-# CLI — pick a profile, or stages/limits directly
-python cli.py crew --provider anthropic --profile comprehensive
-python cli.py crew --stages recon,vuln,report --max-results 200 --scope 'org:"Acme Corp"'
+**Terminal 1 — the server** (system Python is fine):
+```bash
+cd core
+python server.py          # prompts for a DB passphrase on first run
+                          # set SHODANSNIPE_PASSPHRASE to skip the prompt
 ```
 
-**Confirm you're running the right build** (ends the "is this the old server.py?" guessing):
+**Terminal 2 — the crew.** It must run in the CrewAI venv (Python 3.12 with `crewai`), which is
+*not* the server's interpreter — so activate that venv first, then run the orchestrator:
+
+```bash
+# Linux / macOS
+source launchers/crewai_env/bin/activate
+python launchers/poc_crew.py anthropic        # or: openai | ollama
+```
+```powershell
+# Windows — crewai.bat just does the two steps above for you
+cd launchers
+crewai.bat anthropic
+```
+
+Open the console at **http://127.0.0.1:8000** (the exact URL the server prints — opening
+`index.html` as a file breaks the API calls).
+
+> **The `.bat` files are Windows convenience only.** `setup_crewai.bat` builds the venv once;
+> `crewai.bat` activates it and runs `poc_crew.py`; `run_server.bat` is just `python server.py`.
+> On Linux/macOS (or if you prefer), run the plain commands above — nothing requires the bats.
+
+To make the GUI's **Run Crew** button use the venv, point the server at whichever launcher you use:
+```bash
+# the server spawns this for /api/crew/run
+export CREW_CMD="launchers/crewai_env/bin/python launchers/poc_crew.py anthropic"   # Linux/macOS
+set     CREW_CMD=crewai.bat anthropic                                               # Windows
+```
+
+**Confirm the server is the current build** (ends the "is this the old `server.py`?" guessing):
 ```bash
 curl http://127.0.0.1:8000/api/version
 #  -> shows the file path it loaded + every feature route with all_present: true/false
 ```
 
-### Server and crew are two separate processes — that's expected
-
-The **server runs continuously** in one terminal; the **crew is a separate run** you launch
-when you want an assessment. Running both at once is normal (they're different processes) —
-the crew just talks to the server over HTTP.
-
-The one catch: the **crew must run in the CrewAI virtualenv** (Python 3.12 with `crewai`
-installed), which is usually *not* the interpreter running the server. Launching the crew with
-the server's Python (e.g. 3.14) fails with missing `crewai`. So:
-
-```
-Terminal 1 (server):   python server.py                     # or cli.py serve — keep it running
-Terminal 2 (crew):     crewai.bat anthropic                 # activates the 3.12 venv, runs the crew
-```
-
-`crewai.bat` exists precisely to activate the right venv — **use it to run the crew.** To make
-the GUI's **Run Crew** button use the venv too, point the server at it:
-```powershell
-set CREW_CMD=crewai.bat anthropic     # the server spawns this for /api/crew/run
-```
-(`python cli.py crew` only works if you run it from the CrewAI venv; otherwise prefer the `.bat`.)
-
 ---
 
 ## 6. The GUI — views & how to use
-<img width="1271" height="674" alt="image" src="https://github.com/user-attachments/assets/039c9043-0581-4eff-84ed-77448305d3f4" />
+<img width="1271" height="674" alt="image" src="https://github.com/user-attachments/assets/64345c1e-7c45-4d13-8102-0fcf198d8eec" />
 
 The web console is a **panel workspace**: a top nav bar opens draggable, resizable neon
 panels. Open the console at `http://127.0.0.1:8000` (served by `server.py`).
+
+<p align="center">
+  <img src="assets/gui.png" alt="ShodanSnipe console — panel workspace" width="100%"/>
+</p>
 
 ### Views (nav-bar panels)
 
@@ -293,10 +309,9 @@ Three presets, increasing in depth **and noise/credit use**. Pick in the GUI or 
 | Time / credits | seconds, tiny | minutes, moderate | slowest, highest |
 | For | "what's exposed now?" | normal authorized assessment | final deep pass, small authorized scope |
 
-```bash
-python cli.py profiles                      # list + show active
-python cli.py crew --profile quick
-```
+Pick a profile in the **◈ Control** panel (Quick / Comprehensive / All) and **Save**. The
+choice is stored server-side and the crew honours it on the next run. The active
+profile is also visible at `GET /api/crew/profiles`.
 
 > **All** turns on the genuinely active capabilities (`nmap_scan`, `probe_sensitive_paths`,
 > `cloud_asset_discovery`) and the heaviest credit users (`shodan_host_detail`, `cve_intel`,
@@ -316,13 +331,14 @@ Run only the **4 pipeline stages** you want — full agent, not all-or-nothing.
 | Vuln | `vuln` | yes | `recon` |
 | Report | `report` | yes | — |
 
-```bash
-python cli.py stages                      # list + state
-python cli.py stages --set recon,report   # skip Nmap and Vuln
-```
+Toggle stages in the **◈ Control** panel and **Save**. The selection is passed to the crew as
+`CREW_STAGES=...` (e.g. `recon,report` to skip Nmap and Vuln), which `poc_crew.py` reads and
+maps onto its `--no-nmap` / agent flags — so the GUI and the crew behave identically. You
+can also set it directly:
 
-The selection becomes `CREW_STAGES=...` in the crew's environment, so GUI, CLI, and
-`crewai.bat` behave identically.
+```bat
+set CREW_STAGES=recon,report      :: then run the crew
+```
 
 ---
 
@@ -365,13 +381,15 @@ or CLI, persisted server-side, no code edits.
 | `report_section_chars` | 8000 | chars of **each** agent's findings fed to the report → **how many hosts make it in** |
 | `autonomy_mode` | `hitl` | `hitl` / `scoped` / `full` |
 
-```bash
-python cli.py settings                                   # show all
-python cli.py settings --set max_results_per_query=200 report_section_chars=16000
-```
+Set these in the **◈ Control** panel's limits grid and **Save** (or **Reset to defaults**).
+Programmatically: `GET/POST /api/settings` and `POST /api/settings/reset`. Every knob is also
+an env var the crew reads (`SHODAN_MAX_RESULTS`, `REPORT_SECTION_CHARS`, `CREW_STAGES`,
+`CREW_MODULES`, …):
 
-REST: `GET/POST /api/settings`, `POST /api/settings/reset`. Every knob is also an env var
-(`SHODAN_MAX_RESULTS`, `REPORT_SECTION_CHARS`, `CREW_STAGES`, `CREW_MODULES`, …).
+```bat
+set SHODAN_MAX_RESULTS=200
+set REPORT_SECTION_CHARS=16000   :: then run the crew
+```
 
 ---
 
@@ -446,20 +464,63 @@ This is why an AWS-hosted box that's genuinely the org's no longer vanishes from
 | `MCP_AUTONOMY_MODE` | `hitl` | `hitl` / `scoped` / `full` |
 | `ENABLE_NMAP` | `1` | `0` = passive only / silence the Nmap warning |
 
+### Setting environment variables
+
+Set the LLM key (and any overrides) **in the terminal that runs the crew**. Two scopes:
+*session* (this terminal only) and *persistent* (every new terminal).
+
+**Linux / macOS**
+```bash
+# session — current shell only
+export ANTHROPIC_API_KEY="sk-ant-..."
+export LLM_PROVIDER="anthropic"
+
+# persistent — add the same lines to ~/.bashrc or ~/.zshrc, then:
+source ~/.bashrc
+```
+
+**Windows — PowerShell**
+```powershell
+# session — current window only
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+$env:LLM_PROVIDER = "anthropic"
+
+# persistent — survives reboots, applies to new windows
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","sk-ant-...","User")
+```
+
+**Windows — Command Prompt (cmd.exe)**
+```bat
+set ANTHROPIC_API_KEY=sk-ant-...        :: session only
+setx ANTHROPIC_API_KEY "sk-ant-..."     :: persistent (open a NEW window to use it)
+```
+
+**A `.env` file (any OS)** — drop a `.env` next to the launcher with `KEY=value` lines; it's
+loaded automatically (python-dotenv is installed). Keep it out of git.
+```
+ANTHROPIC_API_KEY=sk-ant-...
+LLM_PROVIDER=anthropic
+SHODANSNIPE_PASSPHRASE=your-passphrase
+```
+
+> Most users only ever set the **LLM key**. Scope, profile, stages, modules, and limits are
+> better set in the **◈ Control** panel — they persist server-side and the crew reads them, so
+> you don't need the `CREW_*` / `SHODAN_MAX_RESULTS` env vars unless you're scripting headless runs.
+
 ---
 
 ## 15. Project structure
 
 ```
 shodansnipe/
-├── cli.py                 ⌨️  serve · crew · stages · settings · profiles
-├── settings.py            ⚙️  single source of truth: limits · stages · 28 modules · profiles
+├── _bootstrap.py          import-path setup — every launcher imports this first
 ├── requirements.txt
 │
-├── core/
-│   ├── server.py          FastAPI: REST · /mcp · settings · /api/version · SQLite · serves UI
-│   ├── mcp_tools.py        the 6 MCP tools (+ list_manifest for the UI viewer)
-│   ├── shodansnipe_core.py Shodan execution, rate limiting, risk scoring
+├── core/                  the engine (rarely changes)
+│   ├── server.py            FastAPI: REST · /mcp · settings · /api/version · SQLite · serves UI
+│   ├── settings.py          single source of truth: limits · stages · 28 modules · profiles
+│   ├── mcp_tools.py         the 6 MCP tools (+ list_manifest for the UI viewer)
+│   ├── shodansnipe_core.py  Shodan execution, rate limiting, risk scoring
 │   └── llm.py · threat_feeds.py
 │
 ├── agents/                one file per team member (build_*_agent / build_*_tasks)
@@ -470,13 +531,25 @@ shodansnipe/
 ├── tools/
 │   ├── shodansnipe_tools.py  search · results · scope · CVE · history
 │   ├── archive_tool.py       WaybackTool + ShodanHostURITool  (backs wayback / shodan_host_uri)
-│   ├── shodan_query.py · report_render.py · nmap_tool.py
+│   ├── report_render.py      deterministic HTML report renderer
+│   └── shodan_query.py · nmap_tool.py
 │
-├── launchers/             poc_crew.py · crewai.bat
+├── launchers/             entry points you run
+│   ├── poc_crew.py          the production orchestrator (full pipeline)
+│   ├── run_server.bat       start the server (run first)
+│   ├── crewai.bat           run the crew (reads scope + mode from the server)
+│   ├── setup_crewai.bat     one-time: build crewai_env (3.12) + deps + nmap check
+│   └── crewai_env/          the crew's Python 3.12 virtualenv
+│
 ├── static/                index.html  ·  control_center.html  (the Control Center)
-├── assets/                banner.svg  ·  crew_panel.png
-└── docs/                  TEAM.md · CREWAI_SETUP.md · TROUBLESHOOTING.md
+├── reports/               generated HTML reports (served at /api/report/latest)
+├── assets/                banner.svg · flow.svg · gui.png · crew_panel.png
+├── skills/                BUILDING_AGENTS.md · BUILDING_TOOLS.md
+└── docs/                  TEAM.md · CREWAI_SETUP.md · STRUCTURE.md
 ```
+
+> Place `settings.py` wherever `server.py` imports it from — in this layout that's `core/`.
+> If you keep it beside `server.py`, the import just works.
 
 ---
 
