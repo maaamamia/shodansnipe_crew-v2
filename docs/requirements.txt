@@ -1,0 +1,25 @@
+# ShodanSnipe AI — Python dependencies
+#
+# Install everything:
+#   pip install -r requirements.txt
+#
+# The CrewAI crew needs Python 3.12 specifically (wheel compatibility).
+
+# ── Core server (core/) ──────────────────────────────────────────────
+fastapi>=0.110
+uvicorn[standard]>=0.27
+shodan>=1.31
+aiohttp>=3.9
+pydantic>=2.0
+requests>=2.31
+
+# ── CrewAI crew (launchers/, agents/, tools/) ────────────────────────
+# Needs Python 3.12. crewai>=0.86 for the MCP adapter (example_crew_mcp.py).
+crewai>=0.86
+
+# ── External binary (not pip) ────────────────────────────────────────
+# nmap — required only for the NMAP active-recon stage.
+#   Windows:  choco install nmap
+#   Linux:    sudo apt install nmap
+#   Mac:      brew install nmap
+# If nmap is absent, set ENABLE_NMAP=0 to run passive (Shodan-only).
