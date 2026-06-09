@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Attack Surface Assessment — Example Corp</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0e1116; --panel:#161b22; --panel2:#1b222c; --ink:#e6edf3; --muted:#8b98a5;
+  --line:#283039; --accent:#4ea1ff;
+  --crit:#ff4d4f; --high:#ff8c1a; --med:#f5c542; --low:#5fb878;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:'IBM Plex Sans',system-ui,sans-serif; line-height:1.6;
+  font-size:15px;
+}
+.wrap{max-width:980px;margin:0 auto;padding:0 28px 120px}
+code,pre,.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+
+/* masthead */
+.masthead{
+  border-bottom:2px solid var(--crit); padding:54px 0 26px; margin-bottom:8px;
+  position:relative;
+}
+.masthead::before{
+  content:"CLASSIFICATION // ATTACK SURFACE ASSESSMENT";
+  font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.28em;
+  color:var(--crit); display:block; margin-bottom:18px;
+}
+.masthead h1{
+  font-family:'Newsreader',Georgia,serif; font-weight:600; font-size:42px;
+  line-height:1.1; margin:0 0 10px;
+}
+.masthead .scope{
+  font-family:'JetBrains Mono',monospace; font-size:13px; color:var(--muted);
+  word-break:break-all; background:var(--panel); border:1px solid var(--line);
+  border-radius:6px; padding:8px 12px; display:inline-block; margin-top:6px;
+}
+.meta{display:flex;gap:26px;flex-wrap:wrap;margin-top:18px;font-size:12px;color:var(--muted);
+  font-family:'JetBrains Mono',monospace;letter-spacing:.04em}
+.meta b{color:var(--ink);font-weight:500}
+
+/* rollup cards */
+.rollup{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:30px 0 10px}
+.card{
+  background:var(--panel); border:1px solid var(--line); border-top:3px solid var(--line);
+  border-radius:8px; padding:16px 18px;
+}
+.card.crit{border-top-color:var(--crit)} .card.high{border-top-color:var(--high)}
+.card.med{border-top-color:var(--med)}  .card.low{border-top-color:var(--low)}
+.card .num{font-family:'Newsreader',serif;font-size:38px;line-height:1;font-weight:600}
+.card.crit .num{color:var(--crit)} .card.high .num{color:var(--high)}
+.card.med .num{color:var(--med)}    .card.low .num{color:var(--low)}
+.card .lbl{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--muted);margin-top:8px}
+
+/* body content */
+.content h2{
+  font-family:'Newsreader',serif;font-weight:600;font-size:27px;margin:44px 0 12px;
+  padding-bottom:8px;border-bottom:1px solid var(--line);
+}
+.content h3{font-family:'Newsreader',serif;font-weight:600;font-size:20px;margin:28px 0 8px;color:#cdd9e5}
+.content h4{font-size:13px;font-family:'JetBrains Mono',monospace;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--muted);margin:18px 0 6px}
+.content p{margin:10px 0;overflow-wrap:anywhere}
+.content a{color:var(--accent)}
+.content ul{margin:10px 0;padding-left:20px}
+.content li{margin:5px 0;overflow-wrap:anywhere}
+.content strong{color:#fff}
+.content code{
+  background:var(--panel2);border:1px solid var(--line);border-radius:4px;
+  padding:1px 6px;font-size:.86em;color:#9fd0ff;word-break:break-all;
+}
+pre.code{
+  background:#0a0d12;border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:8px;padding:14px 16px;overflow-x:auto;font-size:13px;line-height:1.55;
+  white-space:pre-wrap;word-break:break-word;
+}
+hr{border:none;border-top:1px dashed var(--line);margin:30px 0}
+
+/* tables */
+.tablewrap{overflow-x:auto;margin:14px 0;border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+thead th{
+  background:var(--panel2);text-align:left;padding:10px 12px;font-family:'JetBrains Mono',monospace;
+  font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+  border-bottom:1px solid var(--line);white-space:nowrap;
+}
+tbody td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;
+  overflow-wrap:anywhere;word-break:break-word;max-width:340px}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:rgba(78,161,255,.05)}
+
+/* severity badges */
+.sev{font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:600;
+  letter-spacing:.08em;padding:2px 7px;border-radius:4px;white-space:nowrap}
+.sev-critical{background:rgba(255,77,79,.16);color:var(--crit);border:1px solid rgba(255,77,79,.4)}
+.sev-high{background:rgba(255,140,26,.15);color:var(--high);border:1px solid rgba(255,140,26,.4)}
+.sev-medium{background:rgba(245,197,66,.14);color:var(--med);border:1px solid rgba(245,197,66,.4)}
+.sev-low{background:rgba(95,184,120,.14);color:var(--low);border:1px solid rgba(95,184,120,.4)}
+
+footer{margin-top:60px;padding-top:18px;border-top:1px solid var(--line);
+  font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);letter-spacing:.04em}
+
+@media (max-width:640px){.rollup{grid-template-columns:repeat(2,1fr)}.masthead h1{font-size:32px}}
+@media print{
+  body{background:#fff;color:#111}
+  .card,.tablewrap,pre.code,.masthead .scope{break-inside:avoid}
+  tbody tr:hover{background:none}
+}
+</style>
+</head><body><div class="wrap">
+<header class="masthead">
+  <h1>Example Corp</h1>
+  <div class="scope">net:203.0.113.0/24 org:&quot;Example Corp&quot;</div>
+  <div class="meta">
+    <span>PROFILE&nbsp; <b>Technical Assessment</b></span>
+    <span>GENERATED&nbsp; <b>2026-06-05 14:12</b></span>
+    <span>FINDINGS&nbsp; <b>3</b></span>
+  </div>
+</header>
+<section class="rollup"><div class="card crit"><div class="num">1</div><div class="lbl">Critical</div></div><div class="card high"><div class="num">2</div><div class="lbl">High</div></div><div class="card med"><div class="num">0</div><div class="lbl">Medium</div></div><div class="card low"><div class="num">0</div><div class="lbl">Low</div></div></section>
+<main class="content">
+<h2 id="sec-executive-summary">EXECUTIVE SUMMARY</h2>
+<p>Risk: Critical — an unauthenticated Oracle WebLogic admin console (T3, RCE) and three internet-facing databases with no auth give an attacker same-day remote code execution.</p>
+<p>PRIMARY SCOPE — Hosts: 14 | Critical: 3 | High: 4 | Immediate actions: 4 ASN-EXPANDED (Expanded Recon, NOT in-scope) — Hosts: 6 | Notable: one RabbitMQ mgmt UI</p>
+<h2 id="sec-critical-high-findings">CRITICAL &amp; HIGH FINDINGS</h2>
+<h3 id="sec-1-oracle-weblogic-admin-console-203-0-113-10-700">1. Oracle WebLogic admin console — 203.0.113.10:7001</h3>
+<ul>
+<li><strong>Risk:</strong> <span class="sev sev-critical">CRITICAL</span> | <strong>CVSS:</strong> 9.8 | <strong>Confidence:</strong> confirmed</li>
+<li><strong>Asset:</strong> 203.0.113.10:7001 (admin.example.com)</li>
+<li><strong>Exposure / Evidence:</strong> WebLogic Server 12.2.1.3, T3 listener responding, HTTP/1.1</li>
+<li><strong>MITRE ATT&amp;CK:</strong> T1190 — Exploit Public-Facing Application</li>
+<li><strong>Fix:</strong> Restrict 7001/7002 to the management VLAN; patch to 14.1.1 | <strong>Timeline:</strong> Immediate</li>
+</ul>
+<h3 id="sec-2-redis-203-0-113-22-6379">2. Redis — 203.0.113.22:6379</h3>
+<ul>
+<li><strong>Risk:</strong> <span class="sev sev-high">HIGH</span> | <strong>Confidence:</strong> confirmed</li>
+<li><strong>Exposure / Evidence:</strong> Redis 6.2.6, no auth, INFO command returns server data</li>
+</ul>
+<h3 id="sec-3-ibm-mq-listener-203-0-113-31-1414">3. IBM MQ listener — 203.0.113.31:1414</h3>
+<ul>
+<li><strong>Risk:</strong> <span class="sev sev-high">HIGH</span> | <strong>Confidence:</strong> inferred</li>
+<li><strong>Exposure / Evidence:</strong> MQ channel listener, version banner suppressed</li>
+</ul>
+<h2 id="sec-detailed-attack-surface-findings-grouped-by-cate">DETAILED ATTACK SURFACE FINDINGS (grouped by category)</h2>
+<h3 id="sec-network-services-protocols">Network Services &amp; Protocols</h3>
+<ul>
+<li><strong>SSH:</strong> 203.0.113.40:22 — OpenSSH 7.4 (dated; multiple CVEs in 7.x)</li>
+<li><strong>FTP:</strong> 203.0.113.51:21 — vsftpd 3.0.3, anonymous login allowed</li>
+<li><strong>App servers &amp; MQ:</strong> WebLogic 12.2.1.3 (7001), ActiveMQ 5.15.2 (8161), RabbitMQ 3.8.9 (15672)</li>
+</ul>
+<h2 id="sec-attack-surface-map">ATTACK SURFACE MAP</h2>
+<div class="tablewrap"><table><thead><tr><th>IP</th><th>Hostname</th><th>Ports</th><th>Product / Version</th><th>HTTP</th><th>Risk</th><th>Confidence</th><th>Scope</th><th>ASN</th></tr></thead><tbody><tr><td>203.0.113.10</td><td>admin.example.com</td><td>7001,7002</td><td>WebLogic 12.2.1.3</td><td>HTTP/1.1</td><td><span class="sev sev-critical">CRITICAL</span></td><td>confirmed</td><td>Primary</td><td>AS64500</td></tr><tr><td>203.0.113.22</td><td>—</td><td>6379</td><td>Redis 6.2.6</td><td>—</td><td><span class="sev sev-high">HIGH</span></td><td>confirmed</td><td>Primary</td><td>AS64500</td></tr><tr><td>203.0.113.51</td><td>ftp.example.com</td><td>21</td><td>vsftpd 3.0.3</td><td>—</td><td><span class="sev sev-high">HIGH</span></td><td>confirmed</td><td>Primary</td><td>AS64500</td></tr><tr><td>203.0.113.40</td><td>—</td><td>22</td><td>OpenSSH 7.4</td><td>—</td><td><span class="sev sev-medium">MEDIUM</span></td><td>confirmed</td><td>Primary</td><td>AS64500</td></tr></tbody></table></div>
+<h2 id="sec-monitoring-queries">MONITORING QUERIES</h2>
+<pre class="code"><code>net:203.0.113.0/24 port:7001,7002
+net:203.0.113.0/24 port:6379
+net:203.0.113.0/24 port:21,22</code></pre>
+<p>Detects re-exposure of WebLogic, Redis, and cleartext transfer/remote-access services.</p>
+<h2 id="sec-confidence-data-freshness">CONFIDENCE &amp; DATA FRESHNESS</h2>
+<ul>
+<li>Confirmed: 11 findings live-verified; 3 Shodan-inferred (version banners suppressed).</li>
+<li>Version-inferred CVEs are candidates, not facts — verify the WebLogic build before action.</li>
+</ul>
+</main>
+<footer>ShodanSnipe // Attack Surface Assessment — authorized, scoped use only. Findings are confidence-tagged; verify inferred items before action.</footer>
+</div></body></html>
