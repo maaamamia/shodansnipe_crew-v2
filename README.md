@@ -42,6 +42,7 @@ net:203.0.113.0/24    Auth · Vuln · Threat-Intel · Report    a human should t
 5. [Running — three modes](#5-running--three-modes)
 6. [The GUI — views & how to use](#6-the-gui--views--how-to-use)
 7. [Scan profiles](#7-scan-profiles)
+   - [Report style (brief vs comprehensive)](#7b-report-style-brief-vs-comprehensive)
 8. [Pick your crew (stages)](#8-pick-your-crew-stages)
 9. [Capability modules (28)](#9-capability-modules-28)
 10. [Settings & limits](#10-settings--limits)
@@ -131,29 +132,65 @@ flowchart TD
 ## 4. Install
 
 **Prerequisites**
-- **Python 3.12** (CrewAI + `fastmcp` wheels are most reliable here; 3.14 can lack wheels)
+- **Python 3.12** for the crew (CrewAI + `fastmcp` wheels are most reliable here; 3.14 can lack wheels)
 - A **Shodan** API key (free tier works)
 - An **LLM** key — Anthropic or OpenAI — or local Ollama
 - **Nmap** *(optional — only for the active Nmap stage)*
 
+There are **two environments** because the server and the crew run on different interpreters:
+the **server** uses your system Python; the **crew** runs in its own `launchers/crewai_env`
+virtualenv (Python 3.12 with CrewAI). Set up both once.
+
+### A) Server environment
+
 ```bash
-# 1) dependencies for the server (fastapi, uvicorn, shodan, fastmcp, …)
+# dependencies for the server (fastapi, uvicorn, shodan, fastmcp, …)
 pip install -r requirements.txt
 
-# 2) make sure fastmcp is in the SAME interpreter that runs the server
+# make sure fastmcp is in the SAME interpreter that runs the server
 python -c "import importlib.util; print('fastmcp:', importlib.util.find_spec('fastmcp') is not None)"
 #   False?  ->  python -m pip install fastmcp     (use the exact python that runs server.py)
-
-# 3) build the crew's 3.12 venv (Windows) — one time
-cd launchers && setup_crewai.bat   # creates launchers/crewai_env + installs crewai + nmap check
-
-# 4) drop tools/archive_tool.py into tools/
-#    (backs the wayback + shodan_host_uri modules; without it the Vuln agent logs
-#     "archive_tool not available" and those two modules are silently off)
 ```
 
-The server and the crew use **different interpreters**: the server runs on your system Python;
-the crew runs in `launchers/crewai_env` (3.12). `setup_crewai.bat` builds that venv — see §5.
+### B) Crew environment — `crewai_env` (one-time)
+
+The crew needs its own Python 3.12 venv with CrewAI installed. Do this **once**; afterwards you
+just activate it (or run `crewai.bat`).
+
+**Windows** — the bat does everything:
+```bat
+cd launchers
+setup_crewai.bat        :: creates launchers\crewai_env, installs CrewAI + requests, checks nmap
+```
+
+**Linux / macOS** — there's no bat, so build it by hand (same result):
+```bash
+cd launchers
+python3.12 -m venv crewai_env          # must be 3.12
+source crewai_env/bin/activate
+pip install --upgrade pip
+pip install "crewai>=0.80.0" requests   # crewai bundles litellm for Anthropic/OpenAI/Ollama
+deactivate
+```
+
+**Verify the crew env is good** (CrewAI importable in that venv):
+```bash
+# Windows
+launchers\crewai_env\Scripts\python -c "import crewai, requests; print('crew env OK', crewai.__version__)"
+# Linux / macOS
+launchers/crewai_env/bin/python -c "import crewai, requests; print('crew env OK', crewai.__version__)"
+```
+If that prints a version, the crew env is ready. If `setup_crewai.bat` fails on Windows, it's
+almost always that **Python 3.12 isn't the one on PATH** — install 3.12 and re-run, or build the
+venv by hand pointing at the 3.12 executable (`py -3.12 -m venv crewai_env`).
+
+### C) Drop in the crew tool
+
+```bash
+# place tools/archive_tool.py into your tools/ folder
+#   (backs the wayback + shodan_host_uri modules; without it poc_crew.py raises
+#    ModuleNotFoundError: No module named 'archive_tool')
+```
 
 **Nmap (optional).** Install only if you want the active stage; otherwise leave the Nmap
 stage off and everything else runs. Windows: download the `.exe` and tick *Add to PATH*, or
@@ -211,7 +248,7 @@ export CREW_CMD="launchers/crewai_env/bin/python launchers/poc_crew.py anthropic
 set     CREW_CMD=crewai.bat anthropic                                               # Windows
 ```
 
-**Confirm the server is the current build**:
+**Confirm the server is the current build** (ends the "is this the old `server.py`?" guessing):
 ```bash
 curl http://127.0.0.1:8000/api/version
 #  -> shows the file path it loaded + every feature route with all_present: true/false
@@ -317,6 +354,40 @@ profile is also visible at `GET /api/crew/profiles`.
 > `cloud_asset_discovery`) and the heaviest credit users (`shodan_host_detail`, `cve_intel`,
 > `asn_hunt`). Run it only against assets you may actively touch, keep autonomy on **HITL**,
 > and set `credit_budget` high enough that the planner doesn't stall mid-run.
+
+---
+
+## 7b. Report style (brief vs comprehensive)
+
+This is a **separate knob from the scan profile** — it controls how verbose the written
+**report** is, not which stages run. They're independent because they share the word
+"comprehensive", which is a common point of confusion: *Quick* is a scan profile, *comprehensive*
+here is a write-up length.
+
+| Style | Output |
+|-------|--------|
+| `auto` *(default)* | follows the profile — a light scan (no vuln, no nmap) → **brief**; a fuller scan → **comprehensive** |
+| `brief` | a tight one-page executive summary |
+| `comprehensive` | the full multi-section report |
+
+**You normally set nothing** — `auto` picks the right length for the profile (so a Quick scan
+gets a brief report). To force it for a single run, pass `--report` when you launch the crew
+directly:
+
+```bash
+# Linux/macOS (venv active) or Windows
+python launchers/poc_crew.py anthropic --report comprehensive
+python launchers/poc_crew.py anthropic --report brief
+```
+
+`crewai.bat` forwards the provider and autonomy mode, not `--report` — so to force a style on
+Windows, run `poc_crew.py` directly as above (the venv must be active), or edit the bat to pass
+it through. The chosen style is printed in the **pre-flight summary** as `Report style:` right
+before the run starts, so you can confirm it.
+
+> The amount of detail that physically fits in the report is also bounded by
+> `report_section_chars` / `report_max_tokens` in the Control Center (§10) — those cap input and
+> output size; `--report` only chooses the template.
 
 ---
 
