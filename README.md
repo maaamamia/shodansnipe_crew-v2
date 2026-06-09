@@ -257,13 +257,12 @@ curl http://127.0.0.1:8000/api/version
 ---
 
 ## 6. The GUI — views & how to use
-<img width="1271" height="674" alt="image" src="https://github.com/user-attachments/assets/64345c1e-7c45-4d13-8102-0fcf198d8eec" />
 
 The web console is a **panel workspace**: a top nav bar opens draggable, resizable neon
 panels. Open the console at `http://127.0.0.1:8000` (served by `server.py`).
 
 <p align="center">
-  <img src="assets/gui.png" alt="ShodanSnipe console — panel workspace" width="100%"/>
+  <img width="1271" height="674" alt="image" src="https://github.com/user-attachments/assets/64345c1e-7c45-4d13-8102-0fcf198d8eec" />
 </p>
 
 ### Views (nav-bar panels)
