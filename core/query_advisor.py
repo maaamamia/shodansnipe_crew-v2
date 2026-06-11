@@ -13,6 +13,18 @@ from __future__ import annotations
 from typing import Any
 import re
 
+# ---------------------------------------------------------------------------
+# SHODAN SYNTAX NOTE (enforced across templates)
+#   Shodan has NO boolean OR / AND / NOT. Filters are implicitly ANDed; a literal
+#   "OR" is treated as a search term and quietly breaks the query. Where you'd want
+#   OR, run separate searches (or use comma syntax inside a single filter, e.g.
+#   port:80,443 or country:US,CA). Negation uses a leading '-' (e.g. -org:"Cloudflare").
+# ---------------------------------------------------------------------------
+SHODAN_SYNTAX_NOTE = (
+    "Shodan has no OR/AND/NOT operators — filters AND implicitly. For alternatives, "
+    "run separate searches or use comma syntax (port:80,443). Negate with '-' (-org:\"...\")."
+)
+
 
 # ---------------------------------------------------------------------------
 # COMPLETE FILTER REFERENCE
@@ -161,7 +173,10 @@ FILTER_REFERENCE: list[dict[str, Any]] = [
         "category": "Content & Protocol",
         "name": "http.favicon.hash",
         "syntax": "http.favicon.hash:116323821",
-        "description": "Favicon hash fingerprint. Identifies specific apps by their icon.",
+        "description": "Favicon hash (MMH3). RISKY for scoping: default framework/CMS favicons "
+                       "are shared by thousands of unrelated hosts. Only pivot on a DISTINCTIVE/"
+                       "custom favicon, and corroborate any match with a second signal (cert CN, "
+                       "ASN, hostname) before trusting it.",
         "tier": "free",
     },
     {
@@ -197,6 +212,46 @@ FILTER_REFERENCE: list[dict[str, Any]] = [
         "name": "ssh.hassh",
         "syntax": "ssh.hassh:b12d2871a123de1e434150bbc...",
         "description": "SSH fingerprint hash. Identifies server software/config.",
+        "tier": "free",
+    },
+    # --- Fingerprint & Pivot (origin-hunting / clustering) ---
+    {
+        "category": "Fingerprint & Pivot",
+        "name": "ssl.cert.serial",
+        "syntax": "ssl.cert.serial:0123456789abcdef",
+        "description": "Every host presenting the SAME cert serial — strong signal for finding "
+                       "exposed ORIGINS hiding behind a CDN (same cert, different IP).",
+        "tier": "free",
+    },
+    {
+        "category": "Fingerprint & Pivot",
+        "name": "ssl.cert.fingerprint",
+        "syntax": "ssl.cert.fingerprint:<sha256>",
+        "description": "Exact cert reuse across IPs. Pairs with ssl.cert.serial for origin discovery.",
+        "tier": "free",
+    },
+    {
+        "category": "Fingerprint & Pivot",
+        "name": "ssl.jarm",
+        "syntax": "ssl.jarm:<jarm-hash>",
+        "description": "TLS-stack fingerprint. Finds sibling infrastructure with an identical TLS "
+                       "configuration (same appliance/build).",
+        "tier": "free",
+    },
+    {
+        "category": "Fingerprint & Pivot",
+        "name": "http.html_hash",
+        "syntax": "http.html_hash:-1234567890",
+        "description": "Hash of the response body. Finds hosts serving an identical page (clones, "
+                       "mirrored origins, shared templates).",
+        "tier": "free",
+    },
+    {
+        "category": "Fingerprint & Pivot",
+        "name": "vhost",
+        "syntax": "vhost:admin.example.com",
+        "description": "Virtual-host name seen on the connection — surfaces name-based vhosts that "
+                       "share an IP.",
         "tier": "free",
     },
     # --- Security (paid) ---
@@ -355,8 +410,8 @@ TEMPLATES: list[dict[str, Any]] = [
         "id": "network-devices",
         "title": "Network Devices",
         "category": "Attack Surface",
-        "description": "Cisco, Juniper, Palo Alto devices exposed to the internet.",
-        "query": 'product:"Cisco" OR product:"Juniper" OR product:"Palo Alto" org:"{org}"',
+        "description": "Network gear exposed to the internet (Cisco shown; run Juniper / Palo Alto as separate searches — Shodan has no OR).",
+        "query": 'product:"Cisco" org:"{org}"',
         "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
         "tier": "free",
     },
@@ -364,8 +419,8 @@ TEMPLATES: list[dict[str, Any]] = [
         "id": "vpn-endpoints",
         "title": "VPN Endpoints",
         "category": "Attack Surface",
-        "description": "Fortinet FortiGate, Cisco VPN, and Pulse Secure endpoints.",
-        "query": 'product:"Fortinet" OR product:"Cisco VPN" OR http.title:"Pulse Connect" org:"{org}"',
+        "description": "VPN endpoints (Fortinet shown; run Cisco AnyConnect / Pulse Connect as separate searches — no OR in Shodan).",
+        "query": 'product:"Fortinet" org:"{org}"',
         "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
         "tier": "free",
     },
@@ -456,7 +511,7 @@ TEMPLATES: list[dict[str, Any]] = [
         "title": "End-of-Life Web Servers",
         "category": "Vulnerability",
         "description": "Old IIS or Apache versions still exposed to the internet.",
-        "query": 'product:"Microsoft IIS httpd 7.5" OR product:"Apache httpd 2.2" org:"{org}"',
+        "query": 'product:"Microsoft IIS httpd 7.5" org:"{org}"',
         "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
         "tier": "free",
     },
@@ -484,7 +539,7 @@ TEMPLATES: list[dict[str, Any]] = [
         "title": "Default Credentials in HTML",
         "category": "Misconfiguration",
         "description": "Pages mentioning default credentials in the HTML body.",
-        "query": 'http.html:"default password" OR http.html:"admin/admin" org:"{org}"',
+        "query": 'http.html:"default password" org:"{org}"',
         "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
         "tier": "free",
     },
@@ -502,7 +557,7 @@ TEMPLATES: list[dict[str, Any]] = [
         "title": "Exposed .git Repositories",
         "category": "Misconfiguration",
         "description": "Web servers accidentally exposing .git directories.",
-        "query": 'http.title:"Index of /.git" OR http.html:"HEAD\nref: refs/" org:"{org}"',
+        "query": 'http.title:"Index of /.git" org:"{org}"',
         "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
         "tier": "free",
     },
@@ -512,7 +567,7 @@ TEMPLATES: list[dict[str, Any]] = [
         "title": "Cobalt Strike C2",
         "category": "Threat Hunting",
         "description": "Known Cobalt Strike beacon indicators in HTTP responses.",
-        "query": 'product:"Cobalt Strike Beacon" OR http.title:"Cobalt Strike"',
+        "query": 'product:"Cobalt Strike Beacon"',
         "params": [],
         "tier": "free",
     },
@@ -557,7 +612,7 @@ TEMPLATES: list[dict[str, Any]] = [
         "title": "Ransomware Portals",
         "category": "Threat Hunting",
         "description": "Known ransomware payment/leak site indicators.",
-        "query": 'http.title:"Your files have been encrypted" OR http.html:"bitcoin" http.html:"decrypt"',
+        "query": 'http.title:"Your files have been encrypted"',
         "params": [],
         "tier": "free",
     },
@@ -566,7 +621,7 @@ TEMPLATES: list[dict[str, Any]] = [
         "title": "Phishing Infrastructure",
         "category": "Threat Hunting",
         "description": "Suspicious newly-issued certs and login page clones.",
-        "query": 'ssl.cert.subject.cn:"login" OR ssl.cert.subject.cn:"secure" port:443 after:{after}',
+        "query": 'ssl.cert.subject.cn:"login" port:443 after:{after}',
         "params": [{"key": "after", "label": "After date", "placeholder": "2024-01-01"}],
         "tier": "free",
     },
@@ -577,6 +632,80 @@ TEMPLATES: list[dict[str, Any]] = [
         "description": "Hosts showing known compromise indicators (banner-level, no tag: filter required).",
         "query": 'http.html:"command not found" port:80,8080 org:"{org}"',
         "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
+        "tier": "free",
+    },
+    # ---- Modern Infrastructure (CI/CD, orchestration, cloud, API, secrets) ----
+    {
+        "id": "cicd-jenkins",
+        "title": "Jenkins CI Servers",
+        "category": "Modern Infra",
+        "description": "Exposed Jenkins dashboards — often unauthenticated, leak build secrets/RCE.",
+        "query": 'http.title:"Dashboard [Jenkins]" org:"{org}"',
+        "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
+        "tier": "free",
+    },
+    {
+        "id": "cicd-gitlab",
+        "title": "GitLab Instances",
+        "category": "Modern Infra",
+        "description": "Self-hosted GitLab — source, CI pipelines, registry. Run ArgoCD/Tekton separately.",
+        "query": 'http.title:"GitLab" org:"{org}"',
+        "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
+        "tier": "free",
+    },
+    {
+        "id": "k8s-api",
+        "title": "Kubernetes API Servers",
+        "category": "Modern Infra",
+        "description": "Exposed kube-apiserver (6443). Pair with Kubelet (10250) and etcd (2379) searches.",
+        "query": 'port:6443 ssl.cert.subject.cn:kube-apiserver',
+        "params": [],
+        "tier": "free",
+    },
+    {
+        "id": "docker-api",
+        "title": "Exposed Docker API",
+        "category": "Modern Infra",
+        "description": "Unauthenticated Docker Engine API (2375) — full host compromise.",
+        "query": 'port:2375 product:"Docker" org:"{org}"',
+        "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
+        "tier": "free",
+    },
+    {
+        "id": "cloud-bucket-s3",
+        "title": "Open S3-style Buckets",
+        "category": "Modern Infra",
+        "description": "Directory-listing bucket responses. Run Azure Blob / GCS variants separately.",
+        "query": 'http.html:"ListBucketResult" org:"{org}"',
+        "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
+        "tier": "free",
+    },
+    {
+        "id": "api-swagger",
+        "title": "Swagger / OpenAPI Docs",
+        "category": "Modern Infra",
+        "description": "Exposed API docs map the whole API surface. Run GraphQL / Actuator separately.",
+        "query": 'http.title:"Swagger UI" org:"{org}"',
+        "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
+        "tier": "free",
+    },
+    {
+        "id": "secrets-vault",
+        "title": "HashiCorp Vault UIs",
+        "category": "Modern Infra",
+        "description": "Internet-facing Vault (8200) — secret-management control plane.",
+        "query": 'http.title:"Vault" port:8200 org:"{org}"',
+        "params": [{"key": "org", "label": "Organization name", "placeholder": "Acme Corp"}],
+        "tier": "free",
+    },
+    {
+        "id": "exposed-origin-behind-cdn",
+        "title": "Exposed Origin Behind CDN",
+        "category": "Modern Infra",
+        "description": "Hosts on your cert that are NOT on a CDN — likely WAF-bypassing origins. "
+                       "Add more -org: negations for other CDNs.",
+        "query": 'ssl.cert.subject.cn:{domain} -org:"Cloudflare, Inc." -org:"Akamai Technologies" -org:"Amazon CloudFront" -org:"Fastly, Inc."',
+        "params": [{"key": "domain", "label": "Your domain", "placeholder": "example.com"}],
         "tier": "free",
     },
 ]
@@ -661,6 +790,16 @@ def suggest_followups(query: str, results: list[dict]) -> list[dict[str, str]]:
                 "label": f"Pivot to {top_cve} ({count} hosts)",
                 "query": f"vuln:{top_cve}",
                 "rationale": "Shodan-flagged vulnerability appearing in multiple results. Paid plan required for vuln: filter.",
+            })
+
+    # 3b) Dominant product → enumerate the cohort (version compare / CVE seeding)
+    if products:
+        top_prod, pcount = max(products.items(), key=lambda x: x[1])
+        if pcount >= 2 and f'product:"{top_prod}"' not in query:
+            suggestions.append({
+                "label": f"Enumerate all {top_prod} ({pcount} hosts)",
+                "query": f'{query} product:"{top_prod}"',
+                "rationale": "Group the dominant product to compare versions across hosts and seed targeted CVE checks.",
             })
 
     # 4) Expired certs if not already filtered

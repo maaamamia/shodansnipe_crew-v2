@@ -1459,6 +1459,8 @@ def crew_run(body: dict = Body(...)) -> dict:
                  "NMAP_MAX_HOSTS": str(s["nmap_max_hosts_per_call"]),
                  "REPORT_MAX_TOKENS": str(s["report_max_tokens"]),
                  "REPORT_SECTION_CHARS": str(s["report_section_chars"]),
+                 "GLOBAL_LIMIT_MULTIPLIER": str(s.get("result_depth_multiplier", 1.0)),
+                 "GLOBAL_NO_LIMITS": "1" if s.get("no_limits") else "0",
                  "MCP_AUTONOMY_MODE": mode or s["autonomy_mode"]}
     db.set_config("crew_last_trigger", json.dumps({
         "scope": scope, "mode": mode,

@@ -161,12 +161,19 @@ DEFAULTS: dict = {
     "nmap_max_hosts_per_call": 50,
     "nmap_intensity":          "stealth",   # stealth (-T2 SYN) | normal (-sV)
     # ── report ────────────────────────────────────────────────────────────────
-    "report_max_tokens": 8000,      # raise this and the report stops truncating
+    "report_max_tokens": 20000,     # report output budget. 8000 truncated multi-finding
+                                    #   reports mid-section; 20k fits a full clustered report.
+                                    #   (gpt-4o-mini caps ~16k; Sonnet/Opus go much higher.)
     "report_section_chars": 60000,  # chars of EACH agent's findings fed to the report's
                                     #   ANALYSIS step → how many hosts make it into the report.
                                     #   (Was 8000, which silently dropped findings; the crew now
                                     #   reads this value, so the UI slider actually controls it.)
     "report_profile":    "technical",  # technical | executive | client
+    # ── result depth (global cap control — see limits.py) ───────────────────
+    "result_depth_multiplier": 1.0, # scales EVERY hardcoded cap (hosts, findings, CVEs…).
+                                    #   2.0 = twice as deep everywhere. Bridged as
+                                    #   GLOBAL_LIMIT_MULTIPLIER so one slider drives the pipeline.
+    "no_limits": False,             # True removes caps entirely (exhaustive, slower).
     # ── autonomy ────────────────────────────────────────────────────────────
     "autonomy_mode": "hitl",        # hitl | scoped | full
     "profile": "comprehensive",     # active scan profile (quick|comprehensive|all|custom)
@@ -186,6 +193,8 @@ _ENV_OVERRIDES = {
     "REPORT_SECTION_CHARS": ("report_section_chars",  int),
     "MCP_AUTONOMY_MODE":    ("autonomy_mode",         str),
     "REPORT_PROFILE":       ("report_profile",        str),
+    "GLOBAL_LIMIT_MULTIPLIER": ("result_depth_multiplier", float),
+    "GLOBAL_NO_LIMITS":     ("no_limits",              lambda v: str(v).lower() in ("1", "true", "yes", "on")),
 }
 
 
