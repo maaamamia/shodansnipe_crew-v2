@@ -747,6 +747,17 @@ If http_probe is available and a host's risk hinges on something Shodan can't sh
 the panel live? is it behind auth?), probe the service URL to confirm before you assign
 Critical/High. A probe that returns 401/403 or refuses connection means downgrade or drop.
 
+━━━ FULL-INVENTORY MANDATE (do not drop the clean surface) ━━━
+Emit EVERY discovered in-scope host in primary_scope_findings — including the CLEAN ones with
+no defect (risk:"Low"/"Informational"). The report's inventory is built from this list, so a
+host you omit here vanishes from the whole assessment. Most of a real surface is unremarkable
+web + SSH + mail + DNS + network services that are NOT findings — they still belong in the
+inventory. In particular, do NOT filter out: SSH/remote-access hosts, mail/DNS/SNMP/BGP/NTP
+and other network-service hosts, and plain web hosts behind a CDN. Risk-rank them honestly
+(most will be Low), but list them all. If a cap forces truncation, prefer raising the cap
+(GLOBAL_LIMIT_MULTIPLIER / LIMIT_RECON_HOSTS) over silently dropping hosts.
+
+
 ━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Return JSON. Note the hard split between primary scope and ASN-expanded:
 {{

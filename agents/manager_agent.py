@@ -281,7 +281,7 @@ class CrossCorrelatorTool(BaseTool):
 
         return json.dumps({
             "cross_agent_hits": sorted(cross_hits, key=lambda x: x["seen_by_agents"], reverse=True)[:50],
-            "all_cves": cves[:100],
+            "all_cves": cves[:1000],
             "critical_signals": critical_signals,
             "high_confidence_ips": [h["ip"] for h in cross_hits if h["seen_by_agents"] >= 3],
             "correlation_summary": (
@@ -408,14 +408,14 @@ STEP 1 — EXPAND SCOPE:
 STEP 2 — BUILD HUNT PLAN:
   Call build_hunt_plan with the expansion results.
   Assign specific hypotheses to each downstream agent.
-  Rank the top 100 highest-risk blind spots.
+  Rank the top 1000 highest-risk blind spots.
 
 STEP 3 — OUTPUT as JSON:
 {{
   "hunt_plan": {{
     "target": "{target_org}",
     "scope_verdict": "confirmed scope + what we\'re expanding into",
-    "top_100_blind_spots": ["...", "...", "...", "...", "..."],
+    "top_1000_blind_spots": ["...", "...", "...", "...", "..."],
     "osint_directives": {{...}},
     "recon_directives": {{...}},
     "auth_directives": {{...}},
@@ -428,7 +428,7 @@ STEP 3 — OUTPUT as JSON:
 """,
         agent=agent,
         expected_output=(
-            "JSON hunt_plan with top_100_blind_spots, osint_directives, "
+            "JSON hunt_plan with top_1000_blind_spots, osint_directives, "
             "recon_directives, auth_directives, vuln_directives, creative_pivots[]"
         ),
     )

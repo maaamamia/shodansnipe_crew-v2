@@ -253,6 +253,16 @@ STEP 3 — PRIORITIZE into four tiers:
   MEDIUM    — CVSS 4.0-6.9. Note, do not run detection queries.
   SKIP      — CVSS < 4.0 or informational only.
 
+  IMPORTANT — these CVSS tiers set INVESTIGATION PRIORITY, not the final finding severity.
+  Final severity follows CONFIRMED IMPACT and is capped by confidence:
+    • A version-inferred CVE (matched from a banner/CPE, exploit NOT confirmed in this exposure)
+      is MEDIUM at most, confidence:inferred — never Critical on the strength of CVSS alone.
+    • A long CVE list on an old banner ("OpenSSH 7.4 — 25 CVEs", "Apache 2.4.37 — 134 CVEs") is
+      NOT a Critical: cite the 1-3 genuinely exploitable in THIS exposure, score on that path,
+      and label the rest "version-associated, not individually validated".
+    • confidence 'inferred' caps the finding at HIGH; CRITICAL requires confidence:confirmed AND
+      the exploit conditions actually met (probe-confirmed). State which when you write Critical.
+
 STEP 4 — SERVICE EXPOSURE FLAGS (evidence-gated — an open port is NOT a finding):
   A port being open is CONTEXT, not a finding. Severity comes from an OBSERVED defect, never
   from the port number alone. Use http_probe (for services that speak HTTP) or concrete
