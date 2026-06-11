@@ -35,6 +35,28 @@ if "%REPORT_MAX_TOKENS%"=="" (
     set REPORT_MAX_TOKENS=8000
 )
 
+REM ── Global result-depth override (scales EVERY hardcoded cap) ────────────────
+REM  GLOBAL_LIMIT_MULTIPLIER=2  -> twice as many hosts/findings everywhere.
+REM  GLOBAL_NO_LIMITS=1         -> remove caps entirely (exhaustive, slower).
+REM  Or target one: set LIMIT_RECON_HOSTS=200 / LIMIT_VULN_DETECT_HOSTS=100 etc.
+if "%GLOBAL_LIMIT_MULTIPLIER%"=="" (
+    set GLOBAL_LIMIT_MULTIPLIER=1
+)
+
+REM ── Crew stages (which agents run, incl. nmap) ──────────────
+REM By default the crew uses the stage selection you saved in the Control Center
+REM (poc_crew fetches it from the running server). To drive stages straight from
+REM here instead — e.g. the server isn't running, or you want to FORCE nmap on —
+REM uncomment the next line. CREW_STAGES set here takes precedence over the server:
+REM set CREW_STAGES=osint,recon,nmap,auth,vuln,threat,report
+REM
+REM For nmap to ACTUALLY run, all of these must also be true (the bat can't fake them):
+REM   1. nmap binary on PATH        (test in THIS window: nmap --version)
+REM   2. tools\nmap_tool.py present AND agents\nmap_recon_agent.py present
+REM   3. "nmap" in the active stages (Control Center toggle, or CREW_STAGES above)
+REM Windows: stealth SYN needs Npcap + Administrator; without admin, set the Control
+REM Center "nmap intensity" to normal (-sV) — it needs no raw socket.
+
 echo.
 echo  ============================================================
 echo   Mode: %MODE%  ^|  Scope: %TARGET_SCOPE%
