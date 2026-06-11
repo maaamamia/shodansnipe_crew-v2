@@ -8,8 +8,9 @@ Three jobs, one place:
        a) quote multi-word / punctuated values: org:"Company, Inc"
        b) post-filter results with a STRICT matcher, because Shodan's `org:`
           is a server-side token match that pulls in look-alikes
-          (the classic: org:"Dell" returning Italian infra whose org is
-           "dell'Esercito Italiano" — "dell'" is Italian for "of the").
+          (e.g. a bareword org name colliding with a foreign-language word or
+           contraction — org:"Acme" can pull "Acme'Servizi" or "Acmena Srl"
+           whose names merely start with the same letters).
 
   2. PROTOCOLS — PROTOCOL_QUERIES is a broad, de-duplicated detection catalog:
      SSH, FTP, SMTP, Telnet, LDAP, Oracle WebLogic + T3, the whole MQ family
@@ -51,7 +52,7 @@ def quote_value(value: str) -> str:
     comma is read as a list separator). Quoting makes the whole string literal:
 
         quote_value("Company, Inc")  -> '"Company, Inc"'
-        quote_value("Dell")          -> 'Dell'          (no quotes needed)
+        quote_value("Acme")          -> 'Acme'          (no quotes needed)
         quote_value('A "B" C')       -> '"A B C"'        (inner quotes stripped)
 
     Shodan has no usable escape for an embedded double-quote, so we strip inner
@@ -123,7 +124,7 @@ def build_query(org: str | None = None,
 # 1b. STRICT IN-SCOPE MATCHER  (the real false-positive killer)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Corporate suffixes dropped before comparison so "Dell" == "Dell Inc" == "Dell, Inc.".
+# Corporate suffixes dropped before comparison so "Acme" == "Acme Inc" == "Acme, Inc.".
 _CORP_SUFFIXES = {
     "inc", "incorporated", "llc", "llp", "ltd", "limited", "corp", "corporation",
     "co", "company", "gmbh", "ag", "sa", "sas", "srl", "spa", "plc", "pty",
@@ -136,14 +137,14 @@ def _normalize_org(name: str) -> list[str]:
     """
     Normalize an org string to a token list for comparison.
 
-    Crucially, apostrophes are removed WITHOUT splitting, so the Italian
-    contraction "dell'Esercito" collapses to ONE token "dellesercito" and can
-    never match the bareword token "dell". Other punctuation splits to spaces.
+    Crucially, apostrophes are removed WITHOUT splitting, so a contraction like
+    "Acme'Servizi" collapses to ONE token "acmeservizi" and can never leak a bare
+    "acme" token that would false-match the target. Other punctuation splits to spaces.
     Corporate suffixes are dropped.
     """
     s = (name or "").lower().strip()
     s = s.replace("’", "'").replace("`", "'")
-    s = s.replace("'", "")                 # join contractions: dell'x -> dellx
+    s = s.replace("'", "")                 # join contractions: acme'x -> acmex
     s = re.sub(r"[^a-z0-9]+", " ", s)       # all other punctuation -> space
     toks = [t for t in s.split() if t and t not in _CORP_SUFFIXES]
     return toks
@@ -156,14 +157,14 @@ def org_in_scope(host_org: str, scope_orgs, strict: bool = False) -> tuple[bool,
     Returns (in_scope, confidence) where confidence is one of:
         "exact"     — normalized token sets are identical
         "contains"  — scope tokens appear as a contiguous run in the host org
-        "reject"    — no word-boundary match (kills the dell' substring leak)
+        "reject"    — no word-boundary match (kills the apostrophe / substring leak)
 
     strict=True accepts only "exact".
 
-        org_in_scope("Dell Inc.",                 ["Dell"])  -> (True,  "exact")
-        org_in_scope("Dell Technologies",         ["Dell"])  -> (True,  "contains")
-        org_in_scope("dell'Esercito Italiano",    ["Dell"])  -> (False, "reject")
-        org_in_scope("Randell Co",                ["Dell"])  -> (False, "reject")
+        org_in_scope("Acme Inc.",                 ["Acme"])  -> (True,  "exact")
+        org_in_scope("Acme Technologies",         ["Acme"])  -> (True,  "contains")
+        org_in_scope("Acme'Servizi Italiani",     ["Acme"])  -> (False, "reject")
+        org_in_scope("Acmena Co",                 ["Acme"])  -> (False, "reject")
     """
     if isinstance(scope_orgs, str):
         scope_orgs = [scope_orgs]
@@ -415,12 +416,12 @@ def version_capture_queries(scope: str) -> list[dict]:
 if __name__ == "__main__":
     print("── escaping ──")
     print(" ", build_query(org="Company, Inc", ports=[443, 8443], exclude_cdn=False))
-    print(" ", build_filter("org", 'Dell "EMC"'))
+    print(" ", build_filter("org", 'Acme "EMC"'))
 
-    print("\n── strict scope matcher (the dell' fix) ──")
-    for ho in ["Dell Inc.", "Dell Technologies", "dell'Esercito Italiano",
-               "Randell Co", "Michael Dell Foundation"]:
-        print(f"  {ho:28} -> {org_in_scope(ho, ['Dell'])}")
+    print("\n── strict scope matcher (apostrophe / substring fix) ──")
+    for ho in ["Acme Inc.", "Acme Technologies", "Acme'Servizi Italiani",
+               "Acmena Co", "Michael Acme Foundation"]:
+        print(f"  {ho:28} -> {org_in_scope(ho, ['Acme'])}")
 
     print("\n── protocol catalog size ──")
     qs = protocol_queries_for('net:203.0.113.0/24')

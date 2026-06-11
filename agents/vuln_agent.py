@@ -6,6 +6,16 @@ queries for specific CVEs, and produces a prioritized vulnerability list.
 """
 from __future__ import annotations
 import os, json
+
+# Shared assessment doctrine (discover-don't-assume, modern-infra focus, impact-driven scoring).
+try:
+    from tools.doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+except ImportError:
+    try:
+        from doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+    except ImportError:
+        _DOCTRINE = ""
+
 from crewai import Agent, Task
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
@@ -16,6 +26,23 @@ SHODANSNIPE_URL = os.environ.get("SHODANSNIPE_URL", "http://127.0.0.1:8000")
 import time as _time
 _HTTP_TIMEOUT = int(os.environ.get("SHODAN_HTTP_TIMEOUT", "120"))
 _HTTP_RETRIES = int(os.environ.get("SHODAN_HTTP_RETRIES", "2"))
+
+try:
+    from tools.limits import cap as _cap
+except ImportError:
+    try:
+        from limits import cap as _cap
+    except ImportError:
+        def _cap(key, default):
+            if (os.environ.get("GLOBAL_NO_LIMITS", "").lower() in ("1", "true", "yes", "on")):
+                return 1_000_000
+            v = os.environ.get("LIMIT_" + key.upper())
+            if v:
+                try: return max(1, int(v))
+                except ValueError: pass
+            try: m = float(os.environ.get("GLOBAL_LIMIT_MULTIPLIER", "1") or "1")
+            except ValueError: m = 1.0
+            return max(1, int(round(default * m)))
 
 
 def _vuln_search_with_retry(query: str, limit: int) -> dict:
@@ -109,8 +136,8 @@ class GetResultsTool(BaseTool):
                     "risk": h.get("risk_level"),
                     "cves": h.get("cves", []),
                     "product": h.get("product"),
-                    "ports": h.get("ports", [])[:10],
-                } for h in results[:30]]
+                    "ports": h.get("ports", [])[:_cap("vuln_ports", 10)],
+                } for h in results[:_cap("vuln_detect_hosts", 30)]]
             }, indent=2)
         except Exception as e:
             return f"Error: {e}"
@@ -205,7 +232,7 @@ def build_vuln_tasks(agent, recon_output: str, auth_output: str) -> list[Task]:
     cve_intel_task = Task(
         description=f"""
 Extract and triage every CVE from the recon and auth findings.
-
+{_DOCTRINE}
 RECON FINDINGS:
 {recon_output[:60000]}
 

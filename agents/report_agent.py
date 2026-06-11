@@ -30,6 +30,16 @@ NO output truncation — write task receives full agent outputs.
 """
 from __future__ import annotations
 import os, json
+
+# Shared assessment doctrine (discover-don't-assume, modern-infra focus, impact-driven scoring).
+try:
+    from tools.doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+except ImportError:
+    try:
+        from doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+    except ImportError:
+        _DOCTRINE = ""
+
 from crewai import Agent, Task
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
@@ -218,6 +228,9 @@ _SECTION_LIBRARY = {
         "- **CVEs:** [top 3 by CVSS as `CVE-id (score) one-clause`; if more, '+N more']\n"
         "- **MITRE:** [T-number(s)] | **Impact:** [ONE sentence — what an attacker does now]\n"
         "- **Fix:** [the single most important action — name the exact asset] | **Timeline:** Immediate/24h/7d\n"
+        "- **Control surface:** [how this exposure or its severity can change dynamically — IAM "
+        "policy, CI/CD variable, K8s RBAC/admission, security group, WAF rule, control-plane API "
+        "— or 'static (verified)' if nothing governs it]\n"
         "- **Scope:** Primary | ASN-Expanded"
     ),
 
@@ -680,6 +693,7 @@ UNIVERSAL REQUIREMENTS:
 {threat_output if threat_output else "(none)"}
 
 RULES:
+{_DOCTRINE}
 - Use the analysis output for dedup, scope split, and TTP mapping. BUT it is a floor, not a
   ceiling: if the analysis enumerated fewer findings than the raw recon/vuln/auth data below
   clearly contains, RECOVER the missing ones from the raw data and write them up too. The

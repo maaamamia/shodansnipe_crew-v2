@@ -31,6 +31,33 @@ import time as _time
 _HTTP_TIMEOUT = int(os.environ.get("SHODAN_HTTP_TIMEOUT", "120"))
 _HTTP_RETRIES = int(os.environ.get("SHODAN_HTTP_RETRIES", "2"))
 
+# Shared assessment doctrine (discover-don't-assume, modern-infra focus, impact-driven scoring).
+try:
+    from tools.doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+except ImportError:
+    try:
+        from doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+    except ImportError:
+        _DOCTRINE = ""
+
+# Global overridable caps — see limits.py. GLOBAL_NO_LIMITS=1 / GLOBAL_LIMIT_MULTIPLIER / LIMIT_<KEY>.
+try:
+    from tools.limits import cap as _cap
+except ImportError:
+    try:
+        from limits import cap as _cap
+    except ImportError:
+        def _cap(key, default):
+            if (os.environ.get("GLOBAL_NO_LIMITS", "").lower() in ("1", "true", "yes", "on")):
+                return 1_000_000
+            v = os.environ.get("LIMIT_" + key.upper())
+            if v:
+                try: return max(1, int(v))
+                except ValueError: pass
+            try: m = float(os.environ.get("GLOBAL_LIMIT_MULTIPLIER", "1") or "1")
+            except ValueError: m = 1.0
+            return max(1, int(round(default * m)))
+
 
 def _search_with_retry(query: str, limit: int, enrich: bool) -> dict:
     """POST /api/search with a generous timeout; on timeout/conn-error retry with a
@@ -155,7 +182,7 @@ class ShodanSearchTool(BaseTool):
                     "ip":         h.get("ip_str"),
                     "in_scope":   h.get("in_scope"),     # server's scope verdict
                     "risk":       h.get("risk_level"),
-                    "ports":      _sort_ports(h.get("ports"))[:20],
+                    "ports":      _sort_ports(h.get("ports"))[:_cap("recon_ports", 20)],
                     "product":    h.get("product"),
                     "version":    h.get("version"),
                     "http_server":h.get("http_server") or (h.get("http") or {}).get("server"),
@@ -165,11 +192,11 @@ class ShodanSearchTool(BaseTool):
                     "asn":        h.get("asn"),
                     "country":    h.get("country"),
                     "hostnames":  h.get("hostnames", [])[:5],
-                    "cves":       h.get("cves", [])[:10],
+                    "cves":       h.get("cves", [])[:_cap("recon_cves", 10)],
                     "http_title": h.get("http_title"),
                     "ssl_subject":h.get("ssl_subject"),
                     "tags":       h.get("tags", []),
-                } for h in sorted(filtered, key=_risk_key)[:50]]
+                } for h in sorted(filtered, key=_risk_key)[:_cap("recon_hosts", 50)]]
             }, indent=2)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             return ("Error: Shodan search timed out after retries. The query is likely too "
@@ -552,6 +579,7 @@ Primary scope (authoritative): {scope_query}
 {_SCOPE_ASN_RULES}
 {_SHODAN_SYNTAX}
 {_FALSE_POSITIVE_DOCTRINE}
+{_DOCTRINE}
 
 ━━━ DOCTRINE: BIG → TARGETED (funnel, and PLAN from what you see) ━━━━
 Do not open with narrow port guesses. First map the surface broadly, read what is actually

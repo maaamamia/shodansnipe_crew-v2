@@ -17,6 +17,35 @@ Red Team recommendations section:
 """
 from __future__ import annotations
 import os, json, re
+
+# Shared assessment doctrine (discover-don't-assume, modern-infra focus, impact-driven scoring).
+try:
+    from tools.doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+except ImportError:
+    try:
+        from doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+    except ImportError:
+        _DOCTRINE = ""
+
+
+# Global overridable caps — see limits.py (GLOBAL_NO_LIMITS / GLOBAL_LIMIT_MULTIPLIER / LIMIT_<KEY>).
+try:
+    from tools.limits import cap as _cap
+except ImportError:
+    try:
+        from limits import cap as _cap
+    except ImportError:
+        def _cap(key, default):
+            if (os.environ.get("GLOBAL_NO_LIMITS", "").lower() in ("1", "true", "yes", "on")):
+                return 1_000_000
+            v = os.environ.get("LIMIT_" + key.upper())
+            if v:
+                try: return max(1, int(v))
+                except ValueError: pass
+            try: m = float(os.environ.get("GLOBAL_LIMIT_MULTIPLIER", "1") or "1")
+            except ValueError: m = 1.0
+            return max(1, int(round(default * m)))
+
 from typing import Any, ClassVar
 from crewai import Agent, Task
 from crewai.tools import BaseTool
@@ -347,7 +376,7 @@ class RedTeamChainTool(BaseTool):
         pentest_scope = []
         overall_risk_factors = []
 
-        for finding in (data if isinstance(data, list) else [data])[:50]:
+        for finding in (data if isinstance(data, list) else [data])[:_cap("threat_findings", 50)]:
             ip = finding.get("ip", "unknown")
             port = str(finding.get("port", ""))
             service = finding.get("service", "").lower()
@@ -432,7 +461,7 @@ class IOCGeneratorTool(BaseTool):
             "ip_watchlist": [{"ip": ip, "type": "exposed_attack_surface",
                               "source": "prior_findings",
                               "note": "watchlist candidate — confidence inherits the originating finding, not assumed high"}
-                             for ip in hosts[:50]],
+                             for ip in hosts[:_cap("threat_watchlist_ips", 50)]],
             "hostname_watchlist": [{"hostname": h, "type": "exposed_service_dns"} for h in hostnames[:20]],
             "siem_rules": [],
             "firewall_blocks": [],
@@ -521,6 +550,7 @@ def build_threat_intel_agent(llm) -> Agent:
 def build_threat_intel_task(agent, vuln_output: str = "", recon_output: str = "") -> Task:
     return Task(
         description=f"""Produce a complete Threat Intelligence Report with Red Team Recommendations.
+{_DOCTRINE}
 
 INPUT DATA:
 Vulnerability findings: {vuln_output[:40000] if vuln_output else 'pull from get_results tool'}
