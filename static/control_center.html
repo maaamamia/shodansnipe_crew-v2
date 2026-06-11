@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Control Center</title>
+<style>
+:root{
+  --bg:#0a0e17; --panel:#111726; --panel2:#0d1320; --line:#1f2a3d;
+  --ink:#dce6f2; --muted:#7d8aa0; --cyan:#39d0d8; --blue:#5b8cff;
+  --amber:#f2b34a; --green:#46d39a; --crit:#ff5a63;
+  --font:'JetBrains Mono',ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);padding:clamp(12px,3vw,28px);font-size:14px}
+.wrap{max-width:920px;margin:0 auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:clamp(16px,3vw,26px);margin-bottom:18px}
+h2{margin:0 0 4px;font-size:clamp(13px,2.4vw,16px);letter-spacing:.14em;text-transform:uppercase;color:var(--cyan)}
+.sub{color:var(--muted);font-size:12px;margin-bottom:18px}
+.section{margin:20px 0 10px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.pill{font-size:10px;letter-spacing:.08em;padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--muted)}
+.pill.on{color:var(--green);border-color:var(--green)} .pill.off{color:var(--crit);border-color:var(--crit)}
+.grid-stages{display:flex;flex-direction:column;gap:9px}
+.grid-mods{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-bottom:6px}
+.grid-limits{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px 16px}
+.grid-tools{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.mgroup{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--blue);margin:14px 0 7px;opacity:.9}
+.tog{display:flex;align-items:flex-start;gap:12px;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);cursor:pointer;transition:.15s}
+.tog:hover{border-color:var(--cyan)} .tog.off{opacity:.5} .tog.dim{opacity:.32}
+.dot{width:10px;height:10px;border-radius:50%;margin-top:5px;flex:0 0 auto;background:var(--muted)}
+.tog[data-k="recon"] .dot{background:var(--blue)} .tog[data-k="nmap"] .dot{background:var(--amber)}
+.tog[data-k="vuln"] .dot{background:var(--crit)} .tog[data-k="report"] .dot{background:var(--green)}
+.tog[data-k="threat"] .dot{background:var(--cyan)}
+.tog .nm{font-weight:600;color:#fff;font-size:13px}
+.tog .ds{color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.45}
+.tog .lk{font-size:9.5px;color:var(--cyan);letter-spacing:.1em}
+.chk{width:19px;height:19px;border:2px solid var(--line);border-radius:6px;flex:0 0 auto;display:grid;place-items:center;margin-top:1px}
+.tog.on .chk{border-color:var(--cyan);background:rgba(57,208,216,.15)}
+.tog.on .chk::after{content:"✓";color:var(--cyan);font-size:12px;font-weight:700}
+.lim label{display:block;font-size:11px;color:var(--muted);margin-bottom:5px}
+.lim input{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:var(--font);font-size:14px;padding:9px 11px}
+.lim input:focus{outline:none;border-color:var(--cyan)}
+.tool{border:1px solid var(--line);border-radius:11px;background:var(--panel2);padding:13px 15px}
+.tool .tn{color:var(--cyan);font-weight:700;font-size:13px;word-break:break-word}
+.tool .td{color:var(--muted);font-size:11.5px;margin:6px 0 9px;line-height:1.5}
+.tool .pr{display:flex;flex-wrap:wrap;gap:5px}
+.tool .pr span{font-size:10px;padding:2px 7px;border-radius:5px;border:1px solid var(--line);color:#9fb0c7}
+.tool .pr span.req{border-color:var(--amber);color:var(--amber)}
+.endpoint{font-size:11px;color:var(--muted)} .endpoint code{color:var(--green)}
+.row{display:flex;gap:12px;margin-top:8px;flex-wrap:wrap}
+button{font-family:var(--font);font-size:13px;border-radius:10px;padding:11px 18px;cursor:pointer;border:1px solid var(--line);background:var(--panel2);color:var(--ink)}
+button.primary{border-color:var(--cyan);color:var(--cyan);background:rgba(57,208,216,.08)}
+button.run{border-color:var(--green);color:var(--green);background:rgba(70,211,154,.08)}
+button:hover{filter:brightness(1.25)}
+.status{margin-top:12px;font-size:12px;color:var(--muted);min-height:16px}
+.status.ok{color:var(--green)} .status.err{color:var(--crit)}
+.order{font-size:12px;color:var(--cyan);margin-top:8px}
+.profiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:10px}
+.prof{border:1px solid var(--line);border-radius:11px;background:var(--panel2);padding:12px 14px;cursor:pointer;transition:.15s}
+.prof:hover{border-color:var(--cyan)}
+.prof.active{border-color:var(--cyan);background:rgba(57,208,216,.10)}
+.prof .pn{font-weight:700;color:#fff;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+.prof .pn .badge{font-size:9.5px;color:var(--cyan);border:1px solid var(--cyan);border-radius:20px;padding:1px 7px;letter-spacing:.06em}
+.prof .pd{color:var(--muted);font-size:11px;margin-top:6px;line-height:1.45}
+.prof .pmeta{color:var(--blue);font-size:10.5px;margin-top:7px}
+/* ── Estimated cost ── */
+.cost-wrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:4px}
+.cost-cell{border:1px solid var(--line);border-radius:11px;background:var(--panel2);padding:13px 15px}
+.cost-cell .cl{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.cost-cell .cv{font-size:20px;font-weight:700;margin-top:5px;color:var(--ink)}
+.cost-cell.total .cv{color:var(--amber)}
+.cost-cell .cs{font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.4}
+.cost-note{font-size:10.5px;color:var(--muted);margin-top:10px;line-height:1.5}
+.cost-note code{color:var(--green)}
+/* ── Run history ── */
+.runs{display:flex;flex-direction:column;gap:9px;margin-top:4px}
+.run{border:1px solid var(--line);border-radius:10px;background:var(--panel2);padding:11px 14px;display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center}
+.run .rmain{min-width:0}
+.run .rtop{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.run .rscope{font-weight:700;color:#fff;font-size:13px;word-break:break-word}
+.run .rtag{font-size:9.5px;letter-spacing:.06em;border:1px solid var(--line);color:var(--muted);border-radius:20px;padding:1px 7px}
+.run .rtag.mode{color:var(--blue);border-color:var(--blue)}
+.run .rmeta{color:var(--muted);font-size:11px;margin-top:5px;line-height:1.5}
+.run .rcost{text-align:right}
+.run .rcost .rd{font-size:18px;font-weight:700;color:var(--amber)}
+.run .rcost .rc{font-size:10.5px;color:var(--muted);margin-top:2px}
+.runs-empty{color:var(--muted);font-size:12px;padding:6px 2px}
+</style></head>
+<body><div class="wrap">
+<div class="card">
+  <h2>◈ Control Center</h2>
+  <div class="sub">Pick your crew, toggle modules, tune limits, inspect MCP tools — all saved server-side, no code edits.</div>
+  <div class="section">Scan profile <span class="pill" id="profPill"></span></div>
+  <div class="profiles" id="profiles"></div>
+  <div class="section">Pick your crew</div>
+  <div class="grid-stages" id="stages"></div>
+  <div class="order" id="order"></div>
+  <div class="section">Capability modules</div>
+  <div id="modules"></div>
+  <div class="section">Limits &amp; budget</div>
+  <div class="grid-limits" id="limits"></div>
+  <div class="section">Estimated cost / run <span class="pill" id="costModelPill">model: —</span></div>
+  <div class="cost-wrap" id="costWrap"></div>
+  <div class="cost-note" id="costNote"></div>
+  <div class="row">
+    <button class="primary" onclick="saveAll()">Save settings</button>
+    <button class="run" onclick="runCrew()">▶ Run Crew on Current Results</button>
+    <button onclick="resetAll()">Reset to defaults</button>
+  </div>
+  <div class="status" id="status"></div>
+</div>
+<div class="card">
+  <div class="section">Run history <span class="pill" id="runsPill">—</span>
+    <button style="font-size:11px;padding:5px 12px" onclick="clearRuns()">Clear</button>
+  </div>
+  <div class="runs" id="runs"></div>
+</div>
+<div class="card">
+  <div class="section">MCP tools <span class="pill" id="mcpPill">checking…</span></div>
+  <div class="endpoint" id="mcpEndpoint"></div>
+  <div class="grid-tools" id="tools" style="margin-top:12px"></div>
+</div>
+</div>
+<script>
+const API = location.origin.startsWith("http") ? location.origin : "http://127.0.0.1:8000";
+const LIMITS=[["max_results_per_query","Max results / query"],["max_queries_per_run","Max queries / run"],["credit_budget","Shodan credit budget"],["nmap_max_hosts_per_call","Nmap hosts / call"],["report_max_tokens","Report max tokens"],["report_section_chars","Report detail (chars / agent)"],["hard_cap_results","Hard cap (ceiling)"]];
+let STAGES=[], MODULES=[], SETTINGS={}, PROFILES=[], ACTIVE="custom";
+const j=async(p)=>{const r=await fetch(API+p);if(!r.ok)throw 0;return r.json();};
+const post=async(p,b)=>{const r=await fetch(API+p,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});return r.json();};
+async function load(){
+  try{
+    STAGES=(await j("/api/crew/stages")).stages;
+    MODULES=(await j("/api/crew/modules")).modules;
+    SETTINGS=await j("/api/settings");
+    const gp=await j("/api/crew/profiles"); PROFILES=gp.profiles; ACTIVE=gp.active;
+    loadTools();
+    loadPricing();
+    loadRuns();
+  }catch(e){ mock(); }
+  renderProfiles();renderStages();renderModules();renderLimits();renderOrder();updateEstimate();
+}
+function mock(){
+  STAGES=[{key:"recon",name:"Recon Specialist",desc:"Passive Shodan mapping (scope-gated).",requires:[],always_on:true,enabled:true},
+    {key:"nmap",name:"Nmap Recon",desc:"Stealthy active confirm + triage.",requires:["recon"],always_on:false,enabled:true},
+    {key:"vuln",name:"Vuln Analyst",desc:"CVE cross-reference + detection queries.",requires:["recon"],always_on:false,enabled:true},
+    {key:"threat",name:"Threat-Intel Analyst",desc:"Adversary layer on confirmed findings: ATT&CK, actors, chains, IOCs.",requires:["vuln"],always_on:false,enabled:true},
+    {key:"report",name:"Report Writer",desc:"Executive threat report.",requires:[],always_on:false,enabled:true}];
+  MODULES=[{"key":"expand_scope","group":"Manager","name":"Scope Expander","desc":"Expand scope into related ASNs / domains / orgs.","enabled":true},{"key":"build_hunt_plan","group":"Manager","name":"Hunt Planner","desc":"Build the prioritised hunt plan for the run.","enabled":true},{"key":"correlate_findings","group":"Manager","name":"Cross-Correlator","desc":"Correlate findings across agents; dedupe.","enabled":true},{"key":"shodan_search","group":"Recon","name":"Shodan Search","desc":"Passive Shodan host search (core).","enabled":true,"always_on":true},{"key":"scope_control","group":"Recon","name":"Scope Get/Set","desc":"Read & set the active scope (core).","enabled":true,"always_on":true},{"key":"asn_hunt","group":"Recon","name":"ASN Hunt","desc":"Discover org ASNs and expand to net ranges.","enabled":true},{"key":"dns_posture","group":"Recon","name":"DNS Posture","desc":"SPF / DMARC / CAA / DNSSEC checks.","enabled":true},{"key":"cert_transparency","group":"OSINT","name":"Cert Transparency","desc":"CT-log search for subdomains & hosts.","enabled":true},{"key":"validate_ownership","group":"OSINT","name":"Ownership Validation","desc":"Confirm an asset belongs to the target before in-scoping.","enabled":true},{"key":"historical_dns","group":"OSINT","name":"Historical / Passive DNS","desc":"Historical DNS records for the scope.","enabled":true},{"key":"reverse_whois","group":"OSINT","name":"Reverse WHOIS","desc":"Pivot on registrant to find related domains.","enabled":false},{"key":"cloud_asset_discovery","group":"OSINT","name":"Cloud Asset Discovery","desc":"Find cloud storage / tenant assets (S3, blob, …).","enabled":false},{"key":"nmap_discovery","group":"Nmap","name":"Discovery Scan","desc":"Stealthy active host/port discovery.","enabled":true,"stage":"nmap"},{"key":"nmap_triage","group":"Nmap","name":"Triage","desc":"Rank hosts HIGH / MED / LOW for the human operator.","enabled":true,"stage":"nmap"},{"key":"nmap_scan","group":"Nmap","name":"Deeper Service Scan","desc":"Fuller service/version scan. Slower.","enabled":false,"stage":"nmap"},{"key":"analyze_auth","group":"Auth","name":"Auth Analysis","desc":"Identify auth mechanisms on exposed services.","enabled":true},{"key":"classify_posture","group":"Auth","name":"Posture Classify","desc":"Classify the auth/exposure posture of a host.","enabled":true},{"key":"json_keyword_scan","group":"Auth","name":"JSON Keyword Scan","desc":"Scan JSON responses for sensitive keywords.","enabled":true},{"key":"probe_sensitive_paths","group":"Auth","name":"Sensitive-Path Probe","desc":"Check well-known sensitive paths. Active.","enabled":false},{"key":"get_results","group":"Vuln","name":"Get Results","desc":"Read the latest results in memory (core).","enabled":true,"always_on":true},{"key":"cve_intel","group":"Vuln","name":"CVE Intel","desc":"CVE / advisory analysis + Shodan detection queries.","enabled":true},{"key":"shodan_host_uri","group":"Vuln","name":"Host Banner Pull","desc":"Full HTTP/SSL banner & URIs on Critical/High hosts.","enabled":true},{"key":"wayback","group":"Vuln","name":"Wayback History","desc":"Historical URLs / sensitive paths from web archives.","enabled":true},{"key":"mitre_attack_lookup","group":"Threat Intel","name":"MITRE ATT&CK Map","desc":"Map exposures to ATT&CK techniques for the report.","enabled":true,"stage":"threat"},{"key":"generate_iocs","group":"Threat Intel","name":"IOC Generator","desc":"Produce indicators of compromise from findings.","enabled":true,"stage":"threat"},{"key":"threat_actor_attribution","group":"Threat Intel","name":"Threat-Actor Context","desc":"Note actors historically associated with the exposures.","enabled":false,"stage":"threat"},{"key":"red_team_attack_chains","group":"Threat Intel","name":"Attack-Chain Hypotheses","desc":"Narrative attack-chain hypotheses for the report.","enabled":false,"stage":"threat"},{"key":"http_probe","group":"Validation","name":"Live Finding Validation","desc":"Curl-style GET/HEAD confirmation an exposure is reachable & unauthenticated before Critical/High. Scope-gated, no exploitation.","enabled":true,"always_on":true},{"key":"get_history","group":"Report","name":"History Access","desc":"Read run history for the report (core).","enabled":true,"always_on":true}];
+  SETTINGS={max_results_per_query:100,max_queries_per_run:16,credit_budget:1000,nmap_max_hosts_per_call:50,report_max_tokens:8000,hard_cap_results:1000,autonomy_mode:"hitl"};
+  PROFILES=[{name:"quick",label:"Quick",desc:"Passive triage — what's exposed right now. Seconds, tiny credit use.",stages:["recon","report"],module_count:6,limits:{max_results_per_query:50}},
+    {name:"comprehensive",label:"Comprehensive",desc:"Recommended. Passive + light active across the full pipeline.",stages:["recon","nmap","vuln","threat","report"],module_count:22,limits:{max_results_per_query:100}},
+    {name:"all",label:"All modules (deep)",desc:"Every capability incl. active scans. Slowest, highest credit use. Authorized active targets only.",stages:["recon","nmap","vuln","threat","report"],module_count:28,limits:{max_results_per_query:200}}];
+  ACTIVE="comprehensive";
+  setStatus("Preview mode — server not reachable.","");
+  document.getElementById("mcpPill").textContent="preview"; loadToolsMock();
+  updateEstimate();
+  const rbox=document.getElementById("runs");if(rbox)rbox.innerHTML='<div class="runs-empty">Run history available once the server is reachable.</div>';
+}
+function renderProfiles(){
+  const c=document.getElementById("profiles");c.innerHTML="";
+  document.getElementById("profPill").textContent="active: "+ACTIVE;
+  PROFILES.forEach(p=>{
+    const d=document.createElement("div");d.className="prof"+(p.name===ACTIVE?" active":"");
+    d.innerHTML='<div class="pn">'+p.label+(p.name===ACTIVE?' <span class="badge">active</span>':'')+'</div>'+
+      '<div class="pd">'+p.desc+'</div>'+
+      '<div class="pmeta">'+p.module_count+' modules · '+p.stages.join("+")+' · results≤'+(p.limits.max_results_per_query||"")+'</div>';
+    d.onclick=()=>applyProfile(p.name);
+    c.appendChild(d);
+  });
+}
+async function applyProfile(name){
+  try{
+    const r=await post("/api/crew/profile",{name});
+    STAGES=r.stages;MODULES=r.modules;SETTINGS=r.settings;ACTIVE=name;
+    renderProfiles();renderStages();renderModules();renderLimits();renderOrder();updateEstimate();
+    setStatus("Applied profile: "+name,"ok");
+  }catch(e){ // offline: apply to local mock state
+    ACTIVE=name;const p=PROFILES.find(x=>x.name===name);
+    if(p){STAGES.forEach(s=>s.enabled=p.stages.includes(s.key)||s.always_on);}
+    renderProfiles();renderStages();renderOrder();updateEstimate();
+    setStatus("Applied profile (preview): "+name,"");
+  }
+}
+function tog(arr,key){const s=arr.find(x=>x.key===key);if(s.always_on)return;
+  s.enabled=!s.enabled; if(s.enabled&&s.requires)s.requires.forEach(r=>{const d=arr.find(x=>x.key===r);if(d)d.enabled=true;});}
+function renderToggle(s,arr){
+  const d=document.createElement("div");d.className="tog "+(s.enabled?"on":"off");d.dataset.k=s.key;
+  d.innerHTML='<span class="dot"></span><div style="flex:1"><div class="nm">'+s.name+' '+(s.always_on?'<span class="lk">always on</span>':'')+'</div><div class="ds">'+s.desc+((s.requires&&s.requires.length)?' — needs '+s.requires.join(", "):"")+'</div></div><span class="chk"></span>';
+  d.onclick=()=>{tog(arr,s.key);ACTIVE="custom";renderProfiles();renderStages();renderModules();renderOrder();updateEstimate();};
+  return d;
+}
+function renderStages(){const c=document.getElementById("stages");c.innerHTML="";STAGES.forEach(s=>c.appendChild(renderToggle(s,STAGES)));}
+function renderModules(){
+  const c=document.getElementById("modules");c.innerHTML="";
+  const stageOn=k=>{const s=STAGES.find(x=>x.key===k);return !s||s.enabled;};
+  const groups=[...new Set(MODULES.map(m=>m.group||"Modules"))];
+  groups.forEach(g=>{
+    const h=document.createElement("div");h.className="mgroup";h.textContent=g;c.appendChild(h);
+    const grid=document.createElement("div");grid.className="grid-mods";
+    MODULES.filter(m=>(m.group||"Modules")===g).forEach(m=>{
+      const el=renderToggle(m,MODULES);
+      if(m.stage&&!stageOn(m.stage)){el.classList.add("dim");el.title="Needs the "+m.stage+" stage enabled";}
+      grid.appendChild(el);
+    });
+    c.appendChild(grid);
+  });
+}
+function renderLimits(){const c=document.getElementById("limits");c.innerHTML="";
+  LIMITS.forEach(([k,l])=>{const w=document.createElement("div");w.className="lim";
+    w.innerHTML='<label>'+l+'</label><input id="f_'+k+'" type="number" min="1" value="'+(SETTINGS[k]??"")+'" oninput="updateEstimate()">';c.appendChild(w);});}
+function renderOrder(){document.getElementById("order").textContent="run order:  "+STAGES.filter(s=>s.enabled).map(s=>s.key).join("  →  ");}
+function setStatus(m,c){const e=document.getElementById("status");e.textContent=m;e.className="status "+(c||"");}
+
+/* ── Estimated cost ──
+   Mirrors settings.estimate_run_cost() on the server so the figure shown here
+   is identical to the one captured into the run log when the crew launches.
+   Pricing (per-1M-token rates + model name) is pulled from the server once so
+   there's a single source of truth; the live recompute just reflects current
+   on-screen selections. */
+let PRICING={cin:3.0,cout:15.0,model:"unknown"};
+async function loadPricing(){
+  try{
+    const d=await j("/api/cost/estimate");const e=d.estimate||{};
+    PRICING={cin:e.model_input_per_m??3.0,cout:e.model_output_per_m??15.0,model:d.model||e.model||"unknown"};
+  }catch(e){/* keep defaults */}
+  updateEstimate();
+}
+function _limVal(k,fallback){const el=document.getElementById("f_"+k);const v=el?parseInt(el.value,10):NaN;return isNaN(v)?(SETTINGS[k]??fallback):v;}
+function _stageOn(k){const s=STAGES.find(x=>x.key===k);return !!(s&&s.enabled);}
+function computeEstimate(){
+  const queries=_limVal("max_queries_per_run",16);
+  const rpq=_limVal("max_results_per_query",100);
+  const pages=Math.max(1,Math.ceil(rpq/100));
+  const queryCredits=queries*pages;
+  const nmapOn=_stageOn("nmap");
+  const scanCredits=nmapOn?_limVal("nmap_max_hosts_per_call",50):0;
+  const reportOn=_stageOn("report");
+  const reportTokens=reportOn?_limVal("report_max_tokens",8000):0;
+  const moduleCount=MODULES.filter(m=>m.enabled).length;
+  const triageTokens=queries*1200;
+  const moduleTokens=moduleCount*800;
+  const llmTokens=reportTokens+triageTokens+moduleTokens;
+  const llmCost=(llmTokens*0.35/1e6)*PRICING.cin+(llmTokens*0.65/1e6)*PRICING.cout;
+  const shodanCost=queryCredits*0.0020+scanCredits*0.0010;
+  return {queryCredits,scanCredits,llmTokens,llmCost,shodanCost,total:llmCost+shodanCost,moduleCount,nmapOn};
+}
+function _money(n){return "$"+(n>=0.01?n.toFixed(2):n.toFixed(4));}
+function updateEstimate(){
+  const c=document.getElementById("costWrap");if(!c)return;
+  const e=computeEstimate();
+  document.getElementById("costModelPill").textContent="model: "+PRICING.model;
+  c.innerHTML=
+    cell("Total / run",_money(e.total),"LLM + Shodan, estimated","total")+
+    cell("LLM",_money(e.llmCost),(e.llmTokens>=1000?(e.llmTokens/1000).toFixed(1)+"k":e.llmTokens)+" tokens")+
+    cell("Query credits",e.queryCredits,_money(e.queryCredits*0.0020)+" · Shodan")+
+    cell("Scan credits",e.scanCredits,e.nmapOn?_money(e.scanCredits*0.0010)+" · nmap":"nmap stage off");
+  document.getElementById("costNote").innerHTML=
+    "Estimate for <code>"+e.moduleCount+"</code> modules across the enabled stages at "+
+    "<code>"+PRICING.cin+"/"+PRICING.cout+"</code> per 1M tokens. The same figure is recorded to "+
+    "<b>Run history</b> each time you launch the crew. Shodan credit dollar values are approximate — "+
+    "not all plans are billed per credit.";
+}
+function cell(label,val,sub,cls){
+  return '<div class="cost-cell '+(cls||"")+'"><div class="cl">'+label+'</div><div class="cv">'+val+'</div><div class="cs">'+(sub||"")+'</div></div>';
+}
+
+/* ── Run history ── */
+async function loadRuns(){
+  const box=document.getElementById("runs");const pill=document.getElementById("runsPill");if(!box)return;
+  try{
+    const d=await j("/api/runs?limit=50");renderRuns(d.runs||[]);
+    if(pill)pill.textContent=(d.total||0)+" run"+((d.total||0)===1?"":"s");
+  }catch(e){box.innerHTML='<div class="runs-empty">Run history unavailable — server not reachable.</div>';if(pill)pill.textContent="—";}
+}
+function renderRuns(runs){
+  const box=document.getElementById("runs");box.innerHTML="";
+  if(!runs.length){box.innerHTML='<div class="runs-empty">No runs captured yet. Launch the crew to record a run + its cost.</div>';return;}
+  runs.forEach(r=>{
+    const cost=r.cost||{};
+    const when=fmtTime(r.started_at);
+    const stages=(r.stages||[]).join(" → ");
+    const d=document.createElement("div");d.className="run";
+    d.innerHTML=
+      '<div class="rmain"><div class="rtop">'+
+        '<span class="rscope">'+esc(r.scope||"(none)")+'</span>'+
+        '<span class="rtag">'+esc(r.profile||"custom")+'</span>'+
+        '<span class="rtag mode">'+esc(r.mode||"hitl")+'</span>'+
+      '</div><div class="rmeta">'+when+' · '+esc(stages||"—")+' · '+(r.module_count||0)+' modules · '+
+        (cost.llm_tokens?((cost.llm_tokens/1000).toFixed(1)+'k tok'):'—')+' · '+
+        (cost.query_credits||0)+' QC'+(cost.scan_credits?(' / '+cost.scan_credits+' SC'):'')+'</div></div>'+
+      '<div class="rcost"><div class="rd">'+_money(cost.total_usd||0)+'</div><div class="rc">est. cost</div></div>';
+    box.appendChild(d);
+  });
+}
+async function clearRuns(){
+  if(!confirm("Clear all captured run history?"))return;
+  try{await fetch(API+"/api/runs",{method:"DELETE"});loadRuns();setStatus("Run history cleared.","ok");}
+  catch(e){setStatus("Could not clear run history — server not reachable.","err");}
+}
+function fmtTime(iso){
+  if(!iso)return "—";
+  try{const dt=new Date(iso);if(isNaN(dt))return iso;
+    return dt.toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"});
+  }catch(e){return iso;}
+}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+
+async function loadTools(){
+  try{
+    const d=await j("/api/mcp/tools");const pill=document.getElementById("mcpPill");
+    pill.textContent=d.enabled?(d.tools.length+" tools • "+(d.transport||"mcp")):"disabled";
+    pill.className="pill "+(d.enabled?"on":"off");
+    document.getElementById("mcpEndpoint").innerHTML=d.enabled?'endpoint: <code>'+API+d.endpoint+'</code>':"MCP disabled — install <code>fastmcp</code> in the server's interpreter.";
+    renderTools(d.tools);
+  }catch(e){document.getElementById("mcpPill").textContent="unreachable";}
+}
+function loadToolsMock(){renderTools([
+  {name:"shodan_search",description:"Run a Shodan search (scope-enforced).",params:[{name:"query",required:true},{name:"limit"},{name:"enrich"}]},
+  {name:"get_results",description:"Most recent search results.",params:[]},
+  {name:"get_scope",description:"Active scope.",params:[]},
+  {name:"set_scope",description:"Set the scope before searching.",params:[{name:"orgs"},{name:"cidrs"}]},
+  {name:"get_history",description:"Recent search history.",params:[{name:"limit"}]},
+  {name:"cve_intel",description:"CVE/advisory analysis + detection queries.",params:[{name:"text",required:true}]}]);}
+function renderTools(tools){
+  const c=document.getElementById("tools");c.innerHTML="";
+  (tools||[]).forEach(t=>{
+    const params=(t.params||[]).map(p=>'<span class="'+(p.required?'req':'')+'">'+p.name+(p.required?'*':'')+'</span>').join("");
+    const d=document.createElement("div");d.className="tool";
+    d.innerHTML='<div class="tn">'+t.name+'</div><div class="td">'+(t.description||"")+'</div><div class="pr">'+(params||'<span>no args</span>')+'</div>';
+    c.appendChild(d);
+  });
+}
+async function saveAll(){
+  const stages=STAGES.filter(s=>s.enabled).map(s=>s.key);
+  const mods=MODULES.filter(s=>s.enabled).map(s=>s.key);
+  const patch={profile:ACTIVE};LIMITS.forEach(([k])=>{const v=document.getElementById("f_"+k).value;if(v!=="")patch[k]=parseInt(v,10);});
+  try{
+    await post("/api/crew/stages",{stages});await post("/api/crew/modules",{modules:mods});await post("/api/settings",patch);
+    setStatus("Saved. Crew: "+stages.join(", ")+"  |  Modules: "+mods.length+" enabled","ok");
+    loadPricing();
+  }catch(e){setStatus("Save failed — server not reachable.","err");}
+}
+async function runCrew(){
+  try{const r=await post("/api/crew/run",{mode:SETTINGS.autonomy_mode||"hitl"});
+    let msg=r.note||("status: "+r.status);
+    if(r.cost&&r.cost.total_usd!=null)msg+="  ·  est. cost "+_money(r.cost.total_usd);
+    setStatus(msg,r.status==="error"?"err":"ok");
+    loadRuns();
+  }catch(e){setStatus("Run failed — server not reachable.","err");}
+}
+async function resetAll(){
+  if(!confirm("Reset all settings (crew, modules, limits, profile) to defaults?")) return;
+  try{
+    await post("/api/settings/reset",{});
+    await load();
+    setStatus("Settings reset to defaults.","ok");
+  }catch(e){setStatus("Reset failed — server not reachable.","err");}
+}
+load();
+</script>
+</body></html>
