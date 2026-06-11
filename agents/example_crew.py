@@ -44,8 +44,8 @@ from report_agent import build_report_agent, build_report_tasks
 # ---------------------------------------------------------------------------
 # Target — change these
 # ---------------------------------------------------------------------------
-TARGET_ORG   = os.getenv("TARGET_ORG", "Dell")
-TARGET_SCOPE = os.getenv("TARGET_SCOPE", 'org:"Dell" hostname:dell.com')
+TARGET_ORG   = os.getenv("TARGET_ORG", "Acme")
+TARGET_SCOPE = os.getenv("TARGET_SCOPE", 'org:"Acme Corp" hostname:acme.com')
 CVE_ADVISORY = os.getenv("CVE_ADVISORY", """
 CVE-2024-38475 - Apache HTTP Server mod_rewrite vulnerability.
 Unauthenticated remote code execution via malformed HTTP requests.
