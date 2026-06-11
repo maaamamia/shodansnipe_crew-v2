@@ -186,8 +186,13 @@ class HuntPlanTool(BaseTool):
                 "alt_domain_candidates_unverified": expansions.get("candidate_alt_domains_unverified", [])[:6],
             },
             "recon_directives": {
-                "use_osint_output_as_primary_seed": True,
-                "do_not_run_generic_queries": True,
+                "osint_is_seed_not_boundary": True,
+                "require_independent_coverage": (
+                    "After running the OSINT seed, RUN the systematic Layer B port-group sweeps, "
+                    "ASN/net sweeps, and pivots — anchored to scope — to find what OSINT missed. "
+                    "'No generic queries' means no UNANCHORED org-only dumps; it does NOT mean "
+                    "'only run the OSINT leads'. Independent discovery is required every run."
+                ),
                 "prioritize": ["VPN/Citrix/RDP", "CI/CD (Jenkins/GitLab)", "databases", "K8s/Docker"],
                 "infra_pivot_queries": expansions.get("infra_patterns", []),
             },

@@ -503,15 +503,18 @@ def build_recon_tasks(agent, target_org: str, scope_query: str,
     # Build the OSINT seed block — injected into Task 2
     if osint_intel:
         seed_block = f"""
-OSINT INTEL PACKAGE — use as PRIMARY search foundation:
+OSINT INTEL PACKAGE — use as your STARTING SEED (not your boundary):
 {osint_intel}
 
-RULE: Run every query in shodan_query_package[] (CRITICAL first, then HIGH, MEDIUM).
+RULE: The OSINT package tells you where to START, not where to STOP.
+      Run every query in shodan_query_package[] (CRITICAL first, then HIGH, MEDIUM).
       Also run net:<cidr> for every confirmed_cidr (ASN-EXPANDED bucket).
       Also run hostname:<sub> for every high_value_subdomain (verify it ends in an
       in-scope domain before counting it as primary scope).
-      Do NOT skip any confirmed asset. Do NOT search outside confirmed assets.
-      Skip anything listed in out_of_scope_asns.
+      Do NOT skip any confirmed asset. Skip anything listed in out_of_scope_asns.
+      THEN continue to Layers B/C/D — independent discovery is REQUIRED. "Stay in scope"
+      means anchor every query to the org's CIDRs / ASNs / cert CNs; it does NOT mean limit
+      yourself to the assets OSINT already handed you. Your job is to find what OSINT MISSED.
 """
     else:
         seed_block = f"""
@@ -552,7 +555,9 @@ Primary scope (authoritative): {scope_query}
 
 ━━━ LAYER A — SEEDED QUERIES ━━━━━━━━━━━━━━━━━━━━━━━━━
 Run every query from the intel package above (CRITICAL → HIGH → MEDIUM).
-These are pre-validated — execute all of them.
+These are pre-validated — execute all of them. This is the START, not the end:
+Layers B, C, and D below are MANDATORY independent discovery and run on EVERY engagement,
+no matter how much OSINT provided. Do not stop after the seeded queries.
 
 ━━━ LAYER B — SYSTEMATIC COVERAGE (grouped, scoped searches) ━━━━━
 Anchor every Layer B query to the primary scope. Use the tightest available anchor —

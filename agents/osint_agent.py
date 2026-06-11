@@ -507,6 +507,46 @@ def build_osint_agent(llm) -> Agent:
     )
 
 
+def build_osint_verify_task(agent, target_org: str, leads: list) -> "Task":
+    """
+    Focused re-engagement task for the scope-reconciliation loop. Instead of re-running the
+    full OSINT footprint, verify ONLY the specific leads the reconciliation flagged — confirm
+    each candidate domain/asset actually exists and ties to the org before it can enter scope.
+    """
+    from crewai import Task
+    lead_list = json.dumps(leads or [])
+    return Task(
+        description=f"""
+SCOPE-RECONCILIATION RE-ENGAGE — verify these specific leads only. Do NOT redo the full
+footprint. For each lead, decide CONFIRMED-in-scope, REJECTED, or STILL-UNKNOWN, with evidence.
+
+Target org : {target_org}
+Leads to verify (candidate domains / assets the first pass left unconfirmed):
+{lead_list}
+
+For EACH lead:
+  1. Does it resolve in DNS (A/AAAA/CNAME)? If not → REJECTED (dangling/non-existent).
+  2. Does it tie to the org by EVIDENCE — cert CN/SAN matches org domains (cert transparency),
+     reverse WHOIS / registrant match, or RDAP-confirmed ownership of its IP? Use
+     validate_ownership / cert transparency / historical DNS tools.
+  3. CONFIRMED only if it resolves AND ownership is evidenced. Otherwise REJECTED or
+     STILL-UNKNOWN (state which check is missing). Never promote a guess on name similarity.
+
+OUTPUT JSON:
+{{
+  "verified_in_scope": [{{"asset": "...", "evidence": "cert CN / RDAP / WHOIS detail"}}],
+  "rejected": [{{"asset": "...", "reason": "no DNS / not org-owned"}}],
+  "still_unknown": [{{"asset": "...", "missing": "what check is needed"}}]
+}}
+""",
+        agent=agent,
+        expected_output=(
+            "JSON: verified_in_scope[] (with evidence), rejected[] (with reason), "
+            "still_unknown[] — only evidence-backed assets are confirmed."
+        ),
+    )
+
+
 def build_osint_tasks(agent, target_org: str, scope_query: str,
                      asns_from_recon: list | None = None) -> list:
     asn_list = json.dumps(asns_from_recon or [])
