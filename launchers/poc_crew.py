@@ -221,6 +221,9 @@ def main():
     parser.add_argument("--no-nmap", action="store_true", help="Disable nmap")
     parser.add_argument("--no-osint",   action="store_true", help="Skip OSINT agent")
     parser.add_argument("--no-threat",  action="store_true", help="Skip threat-intel agent")
+    parser.add_argument("--refine", action="store_true",
+                        help="After scope reconciliation, run ONE bounded extra recon pass on "
+                             "the gaps it found (off by default — enable once the server keeps up).")
     parser.add_argument("--no-archive", action="store_true", help="Skip Wayback/ShodanURI enrichment")
     args = parser.parse_args()
 
@@ -341,7 +344,7 @@ def main():
     # Mandatory team members — the crew cannot run without these. A clear message beats
     # a raw ModuleNotFoundError if the agents/ folder isn't on the path.
     try:
-        from manager_agent    import build_manager_agent, build_manager_hunt_plan_task, build_manager_correlation_task
+        from manager_agent    import build_manager_agent, build_manager_hunt_plan_task, build_manager_correlation_task, build_manager_scope_reconciliation_task
         from recon_agent      import build_recon_agent,   build_recon_tasks
         from vuln_agent       import build_vuln_agent,    build_vuln_tasks
         from report_agent     import build_report_agent,  build_report_tasks
@@ -358,12 +361,12 @@ def main():
     # Optional team members — if a file is missing, disable that stage with a warning
     # instead of crashing the whole run (these are the same stages as the --no-* flags).
     try:
-        from osint_agent      import build_osint_agent,   build_osint_tasks
+        from osint_agent      import build_osint_agent,   build_osint_tasks, build_osint_verify_task
     except ModuleNotFoundError as e:
         print(f"[WARN] osint_agent not found ({e.name}) — OSINT stage DISABLED. "
               "Restore agents/osint_agent.py to enable it.")
         args.no_osint = True
-        build_osint_agent = build_osint_tasks = None
+        build_osint_agent = build_osint_tasks = build_osint_verify_task = None
     try:
         from nmap_recon_agent import build_nmap_agent,    build_nmap_tasks
     except ModuleNotFoundError as e:
@@ -538,6 +541,72 @@ def main():
         print(f"\n[NMAP] Complete — {len(nmap_output)} chars")
     else:
         print("\n[NMAP] Skipped — nmap binary not available or ENABLE_NMAP=0")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE 1.6: SCOPE RECONCILIATION — define scope from what was actually found
+    # ══════════════════════════════════════════════════════════════════════════
+    def _reconcile():
+        t = build_manager_scope_reconciliation_task(
+            manager_agent, osint_output=osint_output,
+            recon_output=recon_output, nmap_output=nmap_output)
+        return run_crew_phase([manager_agent], [t])
+
+    print("\n" + "=" * 62)
+    print("  PHASE 1.6 — MANAGER: scope reconciliation (lock scope from metadata)")
+    print("=" * 62)
+    scope_recon_output = _reconcile()
+    print(f"\n[SCOPE-RECON] Complete — {len(scope_recon_output)} chars")
+    manager_plan_output += "\n\n=== SCOPE RECONCILIATION (authoritative) ===\n" + scope_recon_output
+
+    # ── PHASE 1.7: bounded refine LOOP ────────────────────────────────────────
+    # reconcile → route gaps (recon queries → recon, domain/ownership leads → osint) →
+    # re-engage → RE-reconcile to confirm closure. Bounded by REFINE_MAX_LOOPS; breaks
+    # early when reconciliation reports no gaps (converged).
+    refine_max = max(1, int(os.environ.get("REFINE_MAX_LOOPS", "1")))
+    if args.refine:
+        for it in range(1, refine_max + 1):
+            try:
+                g = json.loads(scope_recon_output)
+            except Exception:
+                g = {}
+            gaps        = g.get("gaps", {}) or {}
+            recon_qs    = [q for q in (g.get("refined_queries") or [])
+                           if isinstance(q, str) and q.strip()][:10]
+            osint_leads = [d for d in (gaps.get("alt_domains_to_verify") or [])
+                           if isinstance(d, str) and d.strip()][:15]
+
+            if not recon_qs and not osint_leads:
+                print(f"\n[REFINE] Loop {it}: converged — no actionable gaps left.")
+                break
+
+            print("\n" + "=" * 62)
+            print(f"  PHASE 1.7 — REFINE LOOP {it}/{refine_max}: "
+                  f"{len(osint_leads)} osint leads, {len(recon_qs)} recon gap queries")
+            print("=" * 62)
+
+            # Re-engage OSINT first (verify domains/ownership) so recon can trust them.
+            if osint_leads and osint_agent and build_osint_verify_task:
+                vt = build_osint_verify_task(osint_agent, target_org, osint_leads)
+                o2 = run_crew_phase([osint_agent], [vt])
+                osint_output += f"\n\n=== OSINT RE-ENGAGE (loop {it}: lead verification) ===\n" + o2
+                print(f"[REFINE] osint verify done — {len(o2)} chars")
+
+            # Re-engage RECON on the scope-gap queries.
+            if recon_qs:
+                seed = json.dumps({"shodan_query_package": [
+                    {"query": q, "priority": "HIGH", "why": "scope-reconciliation gap"} for q in recon_qs]})
+                r2 = run_crew_phase([recon_agent],
+                                    build_recon_tasks(recon_agent, target_org, scope_query, osint_intel=seed))
+                recon_output += f"\n\n=== RECON RE-ENGAGE (loop {it}: gap-closing) ===\n" + r2
+                print(f"[REFINE] recon re-engage done — {len(r2)} chars")
+
+            # Re-reconcile to confirm the gaps actually closed (and seed the next loop).
+            scope_recon_output = _reconcile()
+            manager_plan_output += f"\n\n=== SCOPE RECONCILIATION (after loop {it}) ===\n" + scope_recon_output
+            print(f"[REFINE] re-reconciled after loop {it} — {len(scope_recon_output)} chars")
+    else:
+        print("\n[SCOPE-RECON] --refine off: gaps reported, no re-engage pass "
+              "(enable with --refine; tune depth with REFINE_MAX_LOOPS).")
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE 2: AUTH + VULN (sequential)
