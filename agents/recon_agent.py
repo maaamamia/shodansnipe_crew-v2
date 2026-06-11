@@ -488,7 +488,7 @@ def build_recon_agent(llm, extra_tools=None) -> Agent:
         tools=tools,
         llm=llm,
         verbose=True,
-        max_iter=40,
+        max_iter=55,
         allow_delegation=False,
     )
 
@@ -553,6 +553,33 @@ Primary scope (authoritative): {scope_query}
 {_SHODAN_SYNTAX}
 {_FALSE_POSITIVE_DOCTRINE}
 
+━━━ DOCTRINE: BIG → TARGETED (funnel, and PLAN from what you see) ━━━━
+Do not open with narrow port guesses. First map the surface broadly, read what is actually
+there, THEN aim. Shodan has no free facet API here, so you profile by running a few broad
+SCOPED queries with a high limit and tallying the distribution yourself. Every later query
+should be justified by something the profile showed — you are planning from evidence, not a
+checklist. Combine filters freely; a single filter is rarely the best query.
+
+━━━ LAYER 0 — SURFACE PROFILING (run FIRST, then plan) ━━━━━━━━━━━━
+Goal: understand the whole in-scope surface before drilling in.
+  1. Broad scoped pull — for each confirmed net:/asn: (and the org as a fallback anchor),
+     run it WIDE (limit 100) with NO port filter. Capture, across all results:
+       - the set of OPEN PORTS actually present (this is your real port list — not a guess)
+       - the PRODUCTS / http.component tech seen (nginx, IIS, WebLogic, Jenkins, F5…)
+       - http.server banners and any X-Powered-By / framework hints
+       - the CDN/WAF orgs fronting hosts vs org-owned origins
+       - obvious clusters (same cert, same title, same favicon) and outliers (lone weird port)
+  2. TALLY it: "N hosts, top ports = [...], dominant stack = [...], M behind Cloudflare,
+     K exposed origins, unusual ports = [...]". Write this profile down — it drives the plan.
+  3. DERIVE THE PLAN from the tally:
+       - Standard port groups (Layer B) are the BASELINE — but ADD every non-standard port the
+         profile revealed and sweep it: net:<cidr> port:<that_port>. Learn the ports; don't
+         assume them.
+       - For each dominant product, queue a product+version cohort query.
+       - For each exposed-origin candidate, queue header + probe confirmation.
+     Then execute Layers A–D against THIS plan, widening or tightening based on result counts
+     (too many → add an anchor; too few → loosen one filter and re-run).
+
 ━━━ LAYER A — SEEDED QUERIES ━━━━━━━━━━━━━━━━━━━━━━━━━
 Run every query from the intel package above (CRITICAL → HIGH → MEDIUM).
 These are pre-validated — execute all of them. This is the START, not the end:
@@ -601,17 +628,75 @@ For each ASN/CIDR from asn_hunt that you verified belongs to the target:
 Everything found here is "ASN-Linked (Expanded Recon)". Track its counts SEPARATELY.
 It never inflates the primary in-scope numbers.
 
-━━━ LAYER D — CREATIVE PIVOTS ━━━━━━━━━━━━━━━━━━━━━━━━
-Follow what you actually find (each as a separate call):
-  Confirmed hostname → hostname:<value>            (related subdomains)
-  Origin cert CN     → ssl.cert.subject.cn:<cn>
-  Org variant        → org:"<variant>"             (abbreviations, subsidiaries)
-  Product+version    → product:"<name>" version:<v>
-  HTTP title         → http.title:"<title>"
-  Favicon hash       → http.favicon.hash:<hash>    (great for finding clones/origins)
-  Unusual port       → SCOPE port:<N>
-Do not stop at the checklist. Follow interesting threads — but every pivot result still
-has to pass the scope test and the false-positive doctrine.
+━━━ LAYER D — CREATIVE PIVOTS (be inventive — this is where coverage is won) ━━━
+The systematic layers above are the floor, not the ceiling. Shodan rewards creativity — most
+real exposure is found by pivoting on something you already saw, not by port lists. Run MANY
+of these (each a separate call), following whatever you actually find:
+
+  Identity / fingerprint pivots:
+    ssl.cert.subject.cn:<cn>                 related hosts on the same cert subject
+    ssl.cert.serial:<serial>                 every host presenting the SAME cert (origins!)
+    ssl.cert.fingerprint:<sha>               exact cert reuse across IPs
+    ssl.cert.issuer.cn:<issuer>              internal CA? self-signed cluster?
+    ssl.jarm:<hash>                          same TLS stack fingerprint (find sibling infra)
+    http.favicon.hash:<hash>                 USE WITH CARE — see favicon-fidelity rule below
+    http.html_hash:<hash>                    identical page body across hosts
+  Content / app pivots:
+    http.title:"<title>"                     reuse of a distinctive login/portal title
+    http.html:"<string>"                     copyright footer, error signature, app name, JS path
+    http.component:"<tech>"                   tech-stack hunting (e.g. "Jenkins","WebLogic","GitLab")
+    http.headers.server:"<banner>"           exact Server: banner reuse
+  Org / infra pivots:
+    org:"<variant>"                          abbreviations, legal names, subsidiaries, acquisitions
+    asn:AS<n> / net:<cidr>                    sibling ranges discovered mid-run
+    hostname:<value>                          related subdomains off a confirmed host
+    product:"<name>" version:<v>              exact product+version cohorts
+  Non-obvious:
+    Unusual/ephemeral ports you SAW on one host → sweep the scope for the same port.
+    A vendor name in a banner → product: that vendor's other products.
+    A cloud hostname (*.amazonaws.com, *.azurewebsites.net) tied to the org → pivot on it.
+Do not stop at this list. If a result hints at more, chase it. Every pivot result still has to
+pass the scope test and the false-positive doctrine — creative does NOT mean sloppy.
+
+━━━ FAVICON FIDELITY (favicon pivots are RISKY — high-fidelity only) ━━━
+A favicon hash match does NOT mean same owner. Default framework/CMS favicons (Apache, IIS,
+Tomcat, GitLab, Jenkins, default React/Vite, "🌐") are shared by thousands of unrelated hosts —
+pivoting on them floods you with false positives. Rules:
+  - Only pivot on a favicon that is DISTINCTIVE/custom to the org (a branded logo), never a
+    stock/default one. If you can't tell it's custom, don't pivot on it.
+  - A favicon-hash match is a CANDIDATE, not a confirmation. It enters scope ONLY when a SECOND
+    independent signal agrees (cert CN on an org domain, org-owned ASN/net, or a matching
+    hostname). Favicon alone is never sufficient.
+  - Record favicon-derived hosts as confidence:"inferred" until corroborated.
+
+━━━ RESPONSE-HEADER CAPTURE & ANALYSIS (do this for every web host you keep) ━━━
+Passively from Shodan, capture http.server and http.component. For hosts that matter, pull live
+headers with http_probe and ANALYSE them — headers are dense evidence:
+  - Server / X-Powered-By / X-AspNet-Version / X-Generator → product + often a version (CVE seed).
+  - Via / X-Cache / CF-RAY / X-Akamai-* / X-Served-By / Server:cloudflare → which CDN/WAF fronts it
+    (feeds the WAF/Origin call). Absence of these on an org-owned IP suggests an exposed origin.
+  - Missing HSTS / CSP / X-Frame-Options / X-Content-Type-Options → posture gaps (Medium, observed).
+  - Set-Cookie without Secure/HttpOnly, permissive Access-Control-Allow-Origin:* → real findings.
+  - WWW-Authenticate → auth scheme (Basic = cleartext creds = a finding).
+Record the headers you used as evidence on the host. A version pulled from a header is as good as
+a banner version for CVE matching.
+
+━━━ WAF / CDN / ORIGIN DETERMINATION (do this — it's frequently missed) ━━━
+For every in-scope web host, decide and RECORD one of:
+  - Fronted by a CDN/WAF — name it (Cloudflare/Akamai/Fastly/CloudFront/Incapsula/Imperva),
+    inferred from Server: header, cert issuer, ASN org, or response headers.
+  - EXPOSED ORIGIN — the host survived the CDN-negation query (Layer B8) and sits on an
+    org-owned net. These BYPASS the WAF and are high-value — flag each by IP.
+  - Direct / no CDN observed — no CDN signature seen (state it's an observation, not proof).
+Run the origin hunt explicitly: ssl.cert.subject.cn:<domain> -org:"Akamai Technologies"
+-org:"Cloudflare, Inc." -org:"Amazon CloudFront" -org:"Fastly" -org:"Imperva". Anything that
+returns is a candidate exposed origin — confirm it's org-owned, then record it.
+
+━━━ SSH / REMOTE-ACCESS CAPTURE (inventory every one) ━━━
+For EVERY host on 22/2222/22222/23/3389/5900/5985/5986: record the exact version
+(e.g. "OpenSSH 7.4", "OpenSSH 8.9p1"). Old/EOL OpenSSH (≤7.x) maps to real CVEs — flag those
+as candidates. SSH being open is not itself High, but every SSH host is INVENTORIED and handed
+forward — never drop them. Non-standard SSH ports (2222, 22222) are worth an extra note.
 
 ━━━ DNS POSTURE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 For each unique in-scope domain/subdomain, run dns_posture.
@@ -638,6 +723,15 @@ Critical/High. A probe that returns 401/403 or refuses connection means downgrad
 Return JSON. Note the hard split between primary scope and ASN-expanded:
 {{
   "queries_run": ["exact query 1", "exact query 2", "..."],
+  "surface_profile": {{
+    "total_hosts_seen": N,
+    "top_ports": [443, 80, 22, "..."],
+    "dominant_products": ["nginx 1.18", "Oracle WebLogic", "..."],
+    "unusual_ports_found": [8531, 9092, "..."],
+    "cdn_fronted_hosts": N, "exposed_origins": N,
+    "plan_notes": "what the broad profile drove — which non-standard ports were swept, which "
+                  "product cohorts and origin/header confirmations were queued as a result"
+  }},
   "primary_scope_summary": {{
     "in_scope_hosts": N,
     "critical": N, "high": N, "medium": N,
@@ -658,7 +752,10 @@ Return JSON. Note the hard split between primary scope and ASN-expanded:
       "confidence": "confirmed|inferred|low",
       "ports": [22, 3389, 443],
       "product": "OpenSSH 7.4",
-      "evidence": "banner string / cert CN / Shodan vuln tag — what was ACTUALLY observed",
+      "server_header": "nginx/1.18.0 | (from http.server or live probe)",
+      "http_protocol": "HTTP/1.1 | HTTP/2 | -",
+      "security_header_gaps": ["HSTS", "CSP"],
+      "evidence": "banner string / cert CN / Shodan vuln tag / response headers — observed",
       "cves_candidate": ["CVE-XXXX-YYYY (version-inferred, unverified)"],
       "waf_cdn": "not observed (unconfirmed) | Akamai | Cloudflare | origin",
       "org": "...",

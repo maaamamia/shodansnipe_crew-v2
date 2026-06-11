@@ -206,19 +206,18 @@ _SECTION_LIBRARY = {
 
     "critical_high_findings": (
         "## CRITICAL & HIGH FINDINGS\n"
-        "CLUSTER identical issues: when the SAME issue hits multiple hosts (same CVE, same "
-        "misconfiguration, same exposed service), write it ONCE and list every affected host "
-        "under **Affected** — never repeat the same issue per host. Enumerate every DISTINCT "
-        "issue (no cap, do not stop at a number); keep each block tight and evidence-led.\n\n"
+        "CLUSTER identical issues: same CVE/misconfig/service across multiple hosts = ONE "
+        "finding with an **Affected** list — never repeat per host. Enumerate every DISTINCT "
+        "issue (no cap). KEEP EACH BLOCK TIGHT — aim for ~8 lines; this is a finding, not an "
+        "essay. Verbose blocks starve the rest of the report and cause truncation.\n\n"
         "### [N]. [Issue name] — [primary asset + \"and N more\" if clustered]\n"
-        "- **Risk:** Critical/High | **CVSS:** [score if CVE] | **Confidence:** confirmed/inferred/low\n"
-        "- **Affected:** [every IP:port (+ hostname) this issue hits — list them, or give the "
-        "count + a representative few if >10]\n"
-        "- **Exposure / Evidence:** [banner, version, title, cert CN, CVE ID — what was ACTUALLY "
-        "observed; include the probe verdict if validated, e.g. 'http_probe: 200, no auth']\n"
-        "- **MITRE ATT&CK:** [T-number(s) from the analysis] — [technique name]\n"
-        "- **Impact:** [one sentence — what an attacker does with this right now]\n"
-        "- **Fix:** [specific action, not generic advice] | **Timeline:** Immediate/24h/7d\n"
+        "- **Risk:** Critical/High | **CVSS:** [score] | **Confidence:** confirmed/inferred/low\n"
+        "- **Affected:** [every IP:port (+ hostname); if >10, give count + 3 representative]\n"
+        "- **Evidence:** [what was ACTUALLY observed — banner/version/title/cert + probe verdict. "
+        "One or two lines, not a transcript.]\n"
+        "- **CVEs:** [top 3 by CVSS as `CVE-id (score) one-clause`; if more, '+N more']\n"
+        "- **MITRE:** [T-number(s)] | **Impact:** [ONE sentence — what an attacker does now]\n"
+        "- **Fix:** [the single most important action — name the exact asset] | **Timeline:** Immediate/24h/7d\n"
         "- **Scope:** Primary | ASN-Expanded"
     ),
 
@@ -250,23 +249,43 @@ _SECTION_LIBRARY = {
 
     "shodan_analysis": (
         "## SHODAN DISCOVERIES & QUERY ANALYSIS\n\n"
+        "**Surface profile (big-picture first):** [from recon's surface_profile — total hosts, "
+        "top ports actually seen, dominant products/stack, unusual ports found, CDN-fronted vs "
+        "exposed-origin counts. One tight paragraph: what the broad sweep revealed and how it "
+        "shaped the targeted queries.]\n\n"
         "| Query | Results | In-scope hits | Notable |\n"
         "|-------|---------|---------------|---------|\n"
         "[Every Shodan query that ran — exact text — with counts and any notable hit.]\n\n"
-        "**False positives reduced:** [CDN cert-sharing artifacts / honeypots / "
-        "version-inferred CVE candidates / out-of-scope substring matches that were "
-        "discarded, and why.]\n"
+        "**Header / tech evidence:** [notable Server / X-Powered-By / framework versions and "
+        "CDN-WAF header signatures (CF-RAY, X-Akamai, Via) that drove product/version or origin "
+        "calls.]\n"
+        "**False positives reduced:** [CDN cert-sharing artifacts / honeypots / version-inferred "
+        "CVE candidates / favicon-only matches without corroboration / out-of-scope substring "
+        "matches that were discarded, and why.]\n"
         "**Coverage gaps:** [anything NOT covered — IPv6, specific protocols, paid filters.]"
     ),
 
     "attack_surface_map": (
-        "## ATTACK SURFACE MAP\n"
-        "Order rows by risk (Critical to Low). Mark scope and confidence.\n\n"
-        "| IP | Hostname | Ports | Product / Version | HTTP | Risk | Confidence | Scope | ASN |\n"
-        "|----|----------|-------|-------------------|------|------|-----------|-------|-----|\n"
-        "[One row per discovered host — ALL hosts. Product / Version carries the EXACT "
-        "version string; HTTP column shows HTTP/1.1, HTTP/2, or — for non-web. Primary and "
-        "ASN-expanded both appear, but the Scope column makes the distinction unambiguous.]"
+        "## ATTACK SURFACE MAP — FULL INVENTORY (every discovered host)\n"
+        "This is the EVERY-RESULT table. One row per host the recon/vuln/nmap agents found — "
+        "primary AND ASN-expanded, Critical down to clean. Do NOT summarise it away or cap it; "
+        "if there are 80 hosts there are 80 rows. Order by risk (Critical→Low).\n\n"
+        "| IP | Hostname | Ports | Product / Version | HTTP | CDN/WAF/Origin | Risk | Conf | Scope | Status |\n"
+        "|----|----------|-------|-------------------|------|----------------|------|------|-------|--------|\n"
+        "[One row per host. Product/Version = EXACT version string. HTTP = HTTP/1.1, HTTP/2, or — . "
+        "CDN/WAF/Origin = 'Cloudflare'/'Akamai'/... if fronted, or 'ORIGIN (exposed)' if it "
+        "survived the CDN-negation check, or 'direct' if no CDN seen. Status = confirmed / probed-200 / "
+        "auth-403 / timeout / inferred. Every host appears — including plain web and SSH-only hosts.]\n\n"
+        "### Remote Access & SSH (every host on 22/23/3389/5900/5985)\n"
+        "| IP | Port | Service / Version | Auth/Notes | CVE candidates | Scope |\n"
+        "|----|------|-------------------|-----------|----------------|-------|\n"
+        "[List EVERY SSH/RDP/VNC/Telnet/WinRM host with its exact version (e.g. OpenSSH 7.4). "
+        "Flag old/EOL versions and their CVE candidates. SSH being open is not itself High, but "
+        "every SSH host must still be inventoried here — do not omit them.]\n\n"
+        "### CDN / WAF / Origin posture\n"
+        "[Short: how many hosts sit behind a CDN/WAF (named), how many are exposed ORIGINS that "
+        "survived CDN-negation (these bypass the WAF — call them out by IP), and any host with NO "
+        "CDN/WAF in front. Exposed origins are the ones that matter — name them.]"
     ),
 
     "threat_intel": (
@@ -330,7 +349,7 @@ REPORT_PROFILES = {
         ),
         "sections": [
             "title", "exec_summary", "validation_coverage", "critical_high_findings",
-            "grouped_findings", "shodan_analysis", "attack_surface_map", "threat_intel",
+            "attack_surface_map", "shodan_analysis", "grouped_findings", "threat_intel",
             "pivots", "recommended_actions", "monitoring_queries", "confidence_freshness",
             "industry_comparison",
         ],
@@ -406,8 +425,8 @@ REPORT_PROFILES = {
         ),
         "sections": [
             "title", "exec_summary", "methodology_scope", "validation_coverage",
-            "critical_high_findings", "grouped_findings", "shodan_analysis",
-            "attack_surface_map", "threat_intel", "pivots", "recommended_actions",
+            "critical_high_findings", "attack_surface_map", "shodan_analysis",
+            "grouped_findings", "threat_intel", "pivots", "recommended_actions",
             "monitoring_queries", "confidence_freshness",
         ],
         "persona": {
