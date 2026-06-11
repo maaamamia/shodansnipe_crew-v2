@@ -56,12 +56,20 @@ class ScopeExpanderTool(BaseTool):
         tld = domain.split(".")[-1] if domain and "." in domain else "com"
 
         expansions = {
-            "alternative_domains": [
+            # NAME-GUESS CANDIDATES ONLY — these are permutations, not discovered assets.
+            # They must NOT enter scope. OSINT derives the real related domains from evidence
+            # (cert transparency CN/SAN, reverse WHOIS, historical DNS); these are just low-
+            # confidence seeds to verify (does it resolve? does it tie to the org?).
+            "candidate_alt_domains_unverified": [
                 f"{domain_root}.io", f"{domain_root}.net", f"{domain_root}.org",
                 f"{domain_root}-dev.{tld}", f"{domain_root}-staging.{tld}",
                 f"{domain_root}-uat.{tld}", f"{domain_root}corp.{tld}",
                 f"{domain_root}inc.{tld}", f"my{domain_root}.{tld}",
             ],
+            "alt_domain_note": (
+                "UNVERIFIED name guesses. Do NOT scope or even search these blindly. OSINT must "
+                "CONFIRM each (resolves in DNS + ties to the org via cert/WHOIS) before it counts."
+            ),
             "cloud_tenant_patterns": [
                 f"{domain_root}.sharepoint.com",
                 f"{domain_root}.onmicrosoft.com",
@@ -167,11 +175,15 @@ class HuntPlanTool(BaseTool):
                 "must_check": [
                     "Validate ASN ownership via RDAP — only include confirmed assets",
                     "Run cert transparency — flag admin/api/vpn/staging subdomains immediately",
-                    "Check cloud asset patterns for all org name variants",
+                    "DERIVE related/alternative domains from EVIDENCE — cert CN/SAN, reverse "
+                    "WHOIS, historical DNS — not from name guesses. A domain enters scope only "
+                    "if it RESOLVES and ties to the org.",
+                    "Treat candidate_alt_domains_unverified as low-confidence seeds: confirm or "
+                    "discard each; never scope an unconfirmed guess.",
                     "Historical DNS — look for recently decommissioned IPs still in use",
                 ],
                 "high_priority_subdomains": expansions.get("subdomain_classes", [])[:10],
-                "alt_domains_to_check": expansions.get("alternative_domains", [])[:6],
+                "alt_domain_candidates_unverified": expansions.get("candidate_alt_domains_unverified", [])[:6],
             },
             "recon_directives": {
                 "use_osint_output_as_primary_seed": True,
@@ -308,6 +320,65 @@ def build_manager_agent(llm) -> Agent:
         verbose=True,
         max_iter=8,
         allow_delegation=False,
+    )
+
+
+def build_manager_scope_reconciliation_task(
+        agent, osint_output: str = "", recon_output: str = "",
+        nmap_output: str = "") -> Task:
+    """
+    Runs AFTER the first OSINT+Recon discovery pass. The Manager reconciles what OSINT
+    PROPOSED against what Recon (and Nmap) actually CONFIRMED, locks the authoritative
+    scope, and lists the gaps worth a bounded second pass. This is where scope is truly
+    DEFINED — from observed metadata, not from the up-front guess.
+    """
+    return Task(
+        description=f"""
+Reconcile scope from the FIRST discovery pass. Do not run new broad searches here — judge
+what was already found and decide what (if anything) deserves a second, targeted pass.
+
+=== OSINT OUTPUT (proposed leads) ===
+{osint_output[:40000] if osint_output else "(none)"}
+
+=== RECON OUTPUT (what Shodan actually confirmed) ===
+{recon_output[:60000] if recon_output else "(none)"}
+
+=== NMAP OUTPUT (live confirmation, if any) ===
+{nmap_output[:20000] if nmap_output else "(none)"}
+
+STEPS:
+1. AUTHORITATIVE SCOPE: from the data, state the confirmed in-scope set — hosts/domains/CIDRs
+   that BOTH tie to the org AND were actually observed. Keep ASN-expanded assets separate.
+2. REJECT false leads: OSINT guesses (incl. candidate_alt_domains_unverified) that did NOT
+   resolve or did NOT tie to the org — list them as rejected, with the reason.
+3. GAPS — what the first pass missed and should be re-engaged on (be specific, query-ready):
+   - osint_leads_not_searched: confirmed OSINT subdomains/CIDRs Recon never queried.
+   - alt_domains_to_verify: candidate domains that DID resolve/tie to org but weren't scoped.
+   - asns_not_swept: org-owned ASNs/nets with no net:/asn: sweep yet.
+   - unconfirmed_high_value: high-risk hosts seen but not version/auth-confirmed.
+4. REFINED QUERIES: a SHORT, tight list (max 10) of scope-anchored Shodan queries that would
+   close the biggest gaps. Anchor each to net:/asn:/cert CN — no broad org-only queries.
+
+OUTPUT as JSON:
+{{
+  "authoritative_scope": {{"primary": ["..."], "asn_expanded": ["..."]}},
+  "rejected_leads": [{{"lead": "...", "reason": "did not resolve / not org-owned"}}],
+  "gaps": {{
+    "osint_leads_not_searched": ["..."],
+    "alt_domains_to_verify": ["..."],
+    "asns_not_swept": ["AS..."],
+    "unconfirmed_high_value": ["1.2.3.4:3389 RDP — version unconfirmed"]
+  }},
+  "refined_queries": ["net:203.0.113.0/24 port:3389", "ssl.cert.subject.cn:acme.com -org:\\"Akamai Technologies\\""],
+  "second_pass_recommended": true
+}}
+""",
+        agent=agent,
+        expected_output=(
+            "JSON: authoritative_scope{primary,asn_expanded}, rejected_leads[], "
+            "gaps{osint_leads_not_searched,alt_domains_to_verify,asns_not_swept,"
+            "unconfirmed_high_value}, refined_queries[] (≤10, anchored), second_pass_recommended"
+        ),
     )
 
 

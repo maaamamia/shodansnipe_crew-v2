@@ -13,6 +13,27 @@ import requests
 
 SHODANSNIPE_URL = os.environ.get("SHODANSNIPE_URL", "http://127.0.0.1:8000")
 
+import time as _time
+_HTTP_TIMEOUT = int(os.environ.get("SHODAN_HTTP_TIMEOUT", "120"))
+_HTTP_RETRIES = int(os.environ.get("SHODAN_HTTP_RETRIES", "2"))
+
+
+def _vuln_search_with_retry(query: str, limit: int) -> dict:
+    """POST /api/search with generous timeout; on timeout retry with a halved limit."""
+    last = None
+    cur = min(limit, 500)
+    for attempt in range(_HTTP_RETRIES + 1):
+        try:
+            r = requests.post(f"{SHODANSNIPE_URL}/api/search",
+                              json={"query": query, "limit": cur}, timeout=_HTTP_TIMEOUT)
+            return r.json()
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last = e
+            cur = max(10, cur // 2)
+            if attempt < _HTTP_RETRIES:
+                _time.sleep(1.5 * (attempt + 1))
+    raise last
+
 
 class CveIntelInput(BaseModel):
     text: str = Field(description="CVE ID, advisory text, or product+version to analyze")
@@ -106,9 +127,10 @@ class ShodanSearchTool(BaseTool):
 
     def _run(self, query: str, limit: int = 25) -> str:
         try:
-            r = requests.post(f"{SHODANSNIPE_URL}/api/search",
-                              json={"query": query, "limit": min(limit, 500)}, timeout=60)
-            return json.dumps(r.json(), indent=2)
+            return json.dumps(_vuln_search_with_retry(query, limit), indent=2)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            return ("Error: detection query timed out after retries. Narrow it (add "
+                    "net:/asn:/port: anchors) or lower the limit, then retry.")
         except Exception as e:
             return f"Error: {e}"
 

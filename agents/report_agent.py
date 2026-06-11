@@ -162,11 +162,36 @@ _SECTION_LIBRARY = {
 
     "exec_summary": (
         "## EXECUTIVE SUMMARY\n"
-        "Risk: [Critical/High/Medium/Low — justified by specific PRIMARY-scope counts]\n"
-        "[2-3 condensed sentences: what was found, what an attacker can do today, the "
-        "single most urgent fix.]\n\n"
-        "PRIMARY SCOPE — Hosts: N | Critical: N | High: N | Immediate actions: N\n"
-        "ASN-EXPANDED (Expanded Recon, NOT in-scope) — Hosts: N | Notable: [one line]"
+        "**Risk: [Critical/High/Medium/Low]** — [one clause naming the single biggest driver, "
+        "with PRIMARY-scope counts].\n\n"
+        "**Top findings** (most urgent first, ONE line each, identical issues clustered across "
+        "hosts — do NOT list the same issue per host):\n"
+        "- [Issue] — [N hosts affected] — [confirmed/inferred] — [one-clause impact]\n"
+        "(3–6 lines maximum.)\n\n"
+        "**Most urgent action:** [one specific step — exact asset — who owns it — timeline].\n\n"
+        "PRIMARY SCOPE — Hosts: N | Critical: N | High: N | Medium: N | Immediate: N\n"
+        "ASN-EXPANDED (Expanded Recon, NOT in-scope) — Hosts: N | Notable: [one line]\n\n"
+        "Keep this a scannable half-page. Do NOT restate findings as full prose here — detail "
+        "lives in the sections below."
+    ),
+
+    "validation_coverage": (
+        "## TESTING & VALIDATION COVERAGE\n"
+        "What was actually tested and what came back valid — the proof of work. Fill every "
+        "count from the data; if a number is unknown, write 'n/a (not run)', never guess.\n\n"
+        "| Stage | Count | Notes |\n"
+        "|-------|-------|-------|\n"
+        "| In-scope hosts discovered | N | Shodan + OSINT + recon |\n"
+        "| Live-confirmed (Nmap / probe) | N | ports re-checked live this run |\n"
+        "| Exposures probed (http_probe) | N | GET/HEAD validation attempts |\n"
+        "| Confirmed exposed (200, no auth) | N | counted as findings below |\n"
+        "| Auth-protected (401/403) → dropped | N | NOT findings — confirms auth present |\n"
+        "| Unreachable / timed out → dropped | N | NOT findings — service not serving |\n"
+        "| Version/CVE candidates (unverified) | N | carried as candidates, not confirmed |\n\n"
+        "**Method:** [one line — e.g. http_probe GET/HEAD, scope-gated, no exploitation; Nmap "
+        "T2 SYN live confirmation]. **Tested-and-clean:** [name hosts/services checked that had "
+        "NO issue — auth present, patched, not exposed. 'Tested, valid, no issue' is a result "
+        "worth stating, and shows coverage]. Every Critical/High below traces back to a row here."
     ),
 
     "methodology_scope": (
@@ -181,11 +206,16 @@ _SECTION_LIBRARY = {
 
     "critical_high_findings": (
         "## CRITICAL & HIGH FINDINGS\n"
-        "List ALL of them and do not stop at a number set. One standardized block each:\n\n"
-        "### [N]. [Service or issue name] — [IP:Port or hostname]\n"
+        "CLUSTER identical issues: when the SAME issue hits multiple hosts (same CVE, same "
+        "misconfiguration, same exposed service), write it ONCE and list every affected host "
+        "under **Affected** — never repeat the same issue per host. Enumerate every DISTINCT "
+        "issue (no cap, do not stop at a number); keep each block tight and evidence-led.\n\n"
+        "### [N]. [Issue name] — [primary asset + \"and N more\" if clustered]\n"
         "- **Risk:** Critical/High | **CVSS:** [score if CVE] | **Confidence:** confirmed/inferred/low\n"
-        "- **Asset:** [exact IP:port (+ hostname)]\n"
-        "- **Exposure / Evidence:** [banner, version, title, cert CN, CVE ID — what was ACTUALLY observed]\n"
+        "- **Affected:** [every IP:port (+ hostname) this issue hits — list them, or give the "
+        "count + a representative few if >10]\n"
+        "- **Exposure / Evidence:** [banner, version, title, cert CN, CVE ID — what was ACTUALLY "
+        "observed; include the probe verdict if validated, e.g. 'http_probe: 200, no auth']\n"
         "- **MITRE ATT&CK:** [T-number(s) from the analysis] — [technique name]\n"
         "- **Impact:** [one sentence — what an attacker does with this right now]\n"
         "- **Fix:** [specific action, not generic advice] | **Timeline:** Immediate/24h/7d\n"
@@ -299,9 +329,9 @@ REPORT_PROFILES = {
             "basics. T-numbers belong inline."
         ),
         "sections": [
-            "title", "exec_summary", "critical_high_findings", "grouped_findings",
-            "shodan_analysis", "attack_surface_map", "threat_intel", "pivots",
-            "recommended_actions", "monitoring_queries", "confidence_freshness",
+            "title", "exec_summary", "validation_coverage", "critical_high_findings",
+            "grouped_findings", "shodan_analysis", "attack_surface_map", "threat_intel",
+            "pivots", "recommended_actions", "monitoring_queries", "confidence_freshness",
             "industry_comparison",
         ],
         "persona": {
@@ -341,8 +371,8 @@ REPORT_PROFILES = {
             "the reader wants the 'so what' and 'what now', not packet-level detail."
         ),
         "sections": [
-            "title", "exec_summary", "critical_high_findings", "threat_intel",
-            "recommended_actions", "confidence_freshness",
+            "title", "exec_summary", "validation_coverage", "critical_high_findings",
+            "threat_intel", "recommended_actions", "confidence_freshness",
         ],
         "persona": {
             "role": "Executive Security Briefer",
@@ -375,9 +405,10 @@ REPORT_PROFILES = {
             "overstatement; clearly separate confirmed findings from leads."
         ),
         "sections": [
-            "title", "exec_summary", "methodology_scope", "critical_high_findings",
-            "grouped_findings", "shodan_analysis", "attack_surface_map", "threat_intel",
-            "pivots", "recommended_actions", "monitoring_queries", "confidence_freshness",
+            "title", "exec_summary", "methodology_scope", "validation_coverage",
+            "critical_high_findings", "grouped_findings", "shodan_analysis",
+            "attack_surface_map", "threat_intel", "pivots", "recommended_actions",
+            "monitoring_queries", "confidence_freshness",
         ],
         "persona": {
             "role": "Client Deliverable Author",
@@ -643,6 +674,13 @@ RULES:
   omit that row entirely. Only use "None identified in this assessment scope" when a section
   genuinely has zero backing data — never as filler.
 - Never truncate any section.
+- VERBOSITY & SCALE: be comprehensive on DISTINCT issues, concise on each. Cluster repeated
+  issues across hosts into one block (one nginx-bypass finding listing all affected hosts, not
+  one per host). Say each thing ONCE — do not restate a finding across the exec summary, the
+  findings list, and the detailed section. On large scopes (50+ hosts) push the Medium/Low long
+  tail into the Attack Surface Map table rather than prose, and summarise the tail ("14 hosts
+  expose only standard web ports — see map") instead of enumerating it in sentences. Density
+  over length: every line earns its place. Comprehensive ≠ verbose.
 - Never invent findings — only report what the data shows, with its evidence.
 - Mark ASN-expanded assets clearly — keep them out of the primary risk count.
 - If http_probe is available and a Critical/High rests on an exposure you cannot see proven

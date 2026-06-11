@@ -24,6 +24,34 @@ import requests
 
 SHODANSNIPE_URL = os.environ.get("SHODANSNIPE_URL", "http://127.0.0.1:8000")
 
+import time as _time
+# Shodan-via-server requests can be slow on broad or enriched queries. Give them room,
+# and on timeout retry LIGHTER (smaller limit, no enrich) rather than repeating the heavy
+# call — that's what actually clears "read timed out". Both are env-tunable.
+_HTTP_TIMEOUT = int(os.environ.get("SHODAN_HTTP_TIMEOUT", "120"))
+_HTTP_RETRIES = int(os.environ.get("SHODAN_HTTP_RETRIES", "2"))
+
+
+def _search_with_retry(query: str, limit: int, enrich: bool) -> dict:
+    """POST /api/search with a generous timeout; on timeout/conn-error retry with a
+    halved limit and enrich off (the two things that make a query slow). Returns parsed
+    JSON; raises the last timeout if every attempt fails."""
+    last = None
+    cur_limit, cur_enrich = limit, enrich
+    for attempt in range(_HTTP_RETRIES + 1):
+        try:
+            r = requests.post(f"{SHODANSNIPE_URL}/api/search",
+                              json={"query": query, "limit": cur_limit, "enrich": cur_enrich},
+                              timeout=_HTTP_TIMEOUT)
+            return r.json()
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last = e
+            cur_limit = max(10, cur_limit // 2)
+            cur_enrich = False
+            if attempt < _HTTP_RETRIES:
+                _time.sleep(1.5 * (attempt + 1))
+    raise last
+
 # ── LOW-VALUE FILTER ──────────────────────────────────────────────────────────
 INTERESTING_PORTS = {
     # web / remote access
@@ -110,10 +138,7 @@ class ShodanSearchTool(BaseTool):
     def _run(self, query: str, limit: int = 25, enrich: bool = False) -> str:
         limit = min(max(limit, 1), 500)
         try:
-            r = requests.post(f"{SHODANSNIPE_URL}/api/search",
-                              json={"query": query, "limit": limit, "enrich": enrich},
-                              timeout=60)
-            d = r.json()
+            d = _search_with_retry(query, limit, enrich)
             results = d.get("results", [])
             filtered = [h for h in results if not _is_low_value(h)]
             honeypots = [h.get("ip_str") for h in results
@@ -146,6 +171,10 @@ class ShodanSearchTool(BaseTool):
                     "tags":       h.get("tags", []),
                 } for h in sorted(filtered, key=_risk_key)[:50]]
             }, indent=2)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            return ("Error: Shodan search timed out after retries. The query is likely too "
+                    "broad or the server is busy. Tighten it with net:/asn:/port: anchors, "
+                    "lower the limit, or set enrich=false, then try again.")
         except Exception as e:
             return f"Error: {e}"
 
