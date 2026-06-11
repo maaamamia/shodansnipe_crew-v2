@@ -119,6 +119,13 @@ def get_credits() -> tuple[int, int]:
 
 def build_llm(provider: str, model: str | None = None):
     from crewai import LLM
+    try:
+        from tools.cached_llm import make_llm as _make_llm, cache_status as _cache_status
+    except ImportError:
+        try:
+            from cached_llm import make_llm as _make_llm, cache_status as _cache_status
+        except ImportError:
+            _make_llm = _cache_status = None
 
     # max_tokens MUST be explicit. Without it the provider default caps the completion and
     # silently truncates long analysis JSON / multi-section reports mid-stream — the root of
@@ -138,6 +145,21 @@ def build_llm(provider: str, model: str | None = None):
         m = model or "claude-sonnet-4-6"
         mt = max(max_tokens, 16000)            # Sonnet/Opus support large outputs
         print(f"[LLM] Anthropic — {m} (max_tokens={mt})")
+        if _make_llm:
+            llm = _make_llm(model=m, api_key=key, provider="anthropic",
+                            max_tokens=mt, temperature=0.2)
+            if _cache_status:
+                st = _cache_status()
+                if not st["prompt_cache_enabled"]:
+                    mode = "off (PROMPT_CACHE=0)"
+                elif st["automatic"]:
+                    mode = "AUTO (crewai marks breakpoints, native provider stamps cache_control)"
+                elif st["crewai_auto_breakpoints"] and not st["native_anthropic_provider"]:
+                    mode = "INACTIVE — run: pip install \"crewai[anthropic]\" (native provider missing)"
+                else:
+                    mode = "litellm-inject (older crewai)"
+                print(f"[LLM] prompt caching: {mode}")
+            return llm
         return LLM(model=m, api_key=key, provider="anthropic",
                    max_tokens=mt, temperature=0.2)
 
@@ -566,24 +588,27 @@ def main():
     # early when reconciliation reports no gaps (converged).
     refine_max = max(1, int(os.environ.get("REFINE_MAX_LOOPS", "1")))
     if args.refine:
+        _seen_queries = set()      # gap queries already executed — never repeat across loops
+        _seen_leads   = set()      # osint leads already verified — never re-verify
         for it in range(1, refine_max + 1):
             try:
                 g = json.loads(scope_recon_output)
             except Exception:
-                g = {}
+                print(f"[REFINE] Loop {it}: reconciliation JSON unparseable — stopping loop.")
+                break
             gaps        = g.get("gaps", {}) or {}
             recon_qs    = [q for q in (g.get("refined_queries") or [])
-                           if isinstance(q, str) and q.strip()][:10]
+                           if isinstance(q, str) and q.strip() and q.strip() not in _seen_queries][:10]
             osint_leads = [d for d in (gaps.get("alt_domains_to_verify") or [])
-                           if isinstance(d, str) and d.strip()][:15]
+                           if isinstance(d, str) and d.strip() and d.strip() not in _seen_leads][:15]
 
             if not recon_qs and not osint_leads:
-                print(f"\n[REFINE] Loop {it}: converged — no actionable gaps left.")
+                print(f"\n[REFINE] Loop {it}: converged — no NEW gaps to chase.")
                 break
 
             print("\n" + "=" * 62)
             print(f"  PHASE 1.7 — REFINE LOOP {it}/{refine_max}: "
-                  f"{len(osint_leads)} osint leads, {len(recon_qs)} recon gap queries")
+                  f"{len(osint_leads)} new osint leads, {len(recon_qs)} new recon gap queries")
             print("=" * 62)
 
             # Re-engage OSINT first (verify domains/ownership) so recon can trust them.
@@ -591,6 +616,7 @@ def main():
                 vt = build_osint_verify_task(osint_agent, target_org, osint_leads)
                 o2 = run_crew_phase([osint_agent], [vt])
                 osint_output += f"\n\n=== OSINT RE-ENGAGE (loop {it}: lead verification) ===\n" + o2
+                _seen_leads.update(osint_leads)
                 print(f"[REFINE] osint verify done — {len(o2)} chars")
 
             # Re-engage RECON on the scope-gap queries.
@@ -600,12 +626,14 @@ def main():
                 r2 = run_crew_phase([recon_agent],
                                     build_recon_tasks(recon_agent, target_org, scope_query, osint_intel=seed))
                 recon_output += f"\n\n=== RECON RE-ENGAGE (loop {it}: gap-closing) ===\n" + r2
+                _seen_queries.update(recon_qs)
                 print(f"[REFINE] recon re-engage done — {len(r2)} chars")
 
             # Re-reconcile to confirm the gaps actually closed (and seed the next loop).
             scope_recon_output = _reconcile()
             manager_plan_output += f"\n\n=== SCOPE RECONCILIATION (after loop {it}) ===\n" + scope_recon_output
-            print(f"[REFINE] re-reconciled after loop {it} — {len(scope_recon_output)} chars")
+            print(f"[REFINE] re-reconciled after loop {it} — {len(scope_recon_output)} chars "
+                  f"({len(_seen_queries)} queries / {len(_seen_leads)} leads consumed so far)")
     else:
         print("\n[SCOPE-RECON] --refine off: gaps reported, no re-engage pass "
               "(enable with --refine; tune depth with REFINE_MAX_LOOPS).")
