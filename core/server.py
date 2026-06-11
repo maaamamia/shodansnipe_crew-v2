@@ -168,6 +168,36 @@ def _load_scope() -> Scope:
         return Scope(name="(none)")
 
 _current_scope: Scope = _load_scope()
+
+# ── Run history persistence ───────────────────────────────────────────────────
+# Every crew run is captured here (timestamp, scope, mode, settings snapshot and
+# its estimated cost) so the Control Center can show a run log with costs that
+# survives a server restart — same pattern as the scope store above.
+_RUNS_STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".shodansnipe_runs.json")
+_MAX_RUNS_KEPT = 200
+
+def _load_runs() -> list[dict]:
+    try:
+        with open(_RUNS_STORE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+def _save_runs(runs: list[dict]) -> None:
+    try:
+        with open(_RUNS_STORE, "w", encoding="utf-8") as f:
+            json.dump(runs[:_MAX_RUNS_KEPT], f, indent=2)
+    except Exception:
+        pass
+
+def _record_run(record: dict) -> dict:
+    """Prepend a run record (newest first) and persist it."""
+    runs = _load_runs()
+    runs.insert(0, record)
+    _save_runs(runs)
+    return record
+
 _last_results: list[dict] = []
 _last_query: str = ""
 _last_search_id: int | None = None
@@ -1445,9 +1475,57 @@ def crew_run(body: dict = Body(...)) -> dict:
                 "hint": "Set CREW_CMD to your launcher command."}
 
     audit("crew_run_started", {"scope": scope, "mode": mode, "pid": proc.pid})
+
+    # ── Capture this run (with its estimated cost) into the persisted run log. ──
+    try:
+        model = (llm.get_settings() or {}).get("model")
+    except Exception:
+        model = None
+    cost = settings.estimate_run_cost(model=model, cfg=s)
+    run_record = _record_run({
+        "id": uuid4().hex[:12],
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "scope": scope or "(none)",
+        "mode": mode,
+        "pid": proc.pid,
+        "profile": s.get("profile", "custom"),
+        "stages": settings.selected_stage_keys(),
+        "module_count": len(settings.selected_module_keys()),
+        "cost": cost,
+    })
+
     return {"status": "started", "pid": proc.pid, "scope": scope, "mode": mode,
-            "log": log_path,
+            "log": log_path, "run_id": run_record["id"], "cost": cost,
             "note": f"Crew launched (pid {proc.pid}). Output → crew_run.log"}
+
+
+# ── Run cost: estimate (preview) + captured run history ───────────────────────
+@app.get("/api/cost/estimate")
+def cost_estimate() -> dict:
+    """Estimated cost of one crew run with the *current* settings + active LLM
+    model. The Control Center polls this so the figure shown before a run is the
+    same one captured into the run log when the crew actually launches."""
+    try:
+        model = (llm.get_settings() or {}).get("model")
+    except Exception:
+        model = None
+    est = settings.estimate_run_cost(model=model)
+    return {"estimate": est, "model": model or "unknown"}
+
+
+@app.get("/api/runs")
+def runs_list(limit: int = 50) -> dict:
+    """Captured crew runs, newest first, each with its estimated cost."""
+    runs = _load_runs()
+    return {"runs": runs[: max(1, limit)], "total": len(runs)}
+
+
+@app.delete("/api/runs")
+def runs_clear() -> dict:
+    """Clear the captured run history."""
+    _save_runs([])
+    audit("runs_cleared", {})
+    return {"cleared": True}
 
 
 # ── Settings & "pick your crew" — read/write from the UI, no code edits ───────
@@ -1563,13 +1641,58 @@ def report_latest():
 
 
 @app.get("/api/report/{name}")
-def report_by_name(name: str):
-    """Serve a specific saved report by filename."""
+def report_by_name(name: str, download: bool = False):
+    """Serve a specific saved report by filename. Pass ?download=1 to force a
+    file download (Content-Disposition: attachment) instead of inline display."""
     safe = os.path.basename(name)
     path = os.path.join(_REPORTS_DIR, safe)
     if safe.endswith(".html") and os.path.exists(path):
+        if download:
+            return FileResponse(path, media_type="text/html", filename=safe)
         return FileResponse(path, media_type="text/html")
     return JSONResponse(status_code=404, content={"error": "not found"})
+
+
+def _render_report_pdf(path: str) -> tuple[bytes | None, str | None]:
+    """Render a saved HTML report to PDF bytes. Tries WeasyPrint first (best CSS
+    fidelity), then pdfkit/wkhtmltopdf. Returns (None, None) if neither engine is
+    installed so the caller can respond with install guidance instead of a 500."""
+    try:
+        from weasyprint import HTML  # type: ignore
+        return HTML(filename=path).write_pdf(), "weasyprint"
+    except Exception as e:
+        logger.info("weasyprint unavailable for PDF render: %s", e)
+    try:
+        import pdfkit  # type: ignore
+        return pdfkit.from_file(path, False), "pdfkit"
+    except Exception as e:
+        logger.info("pdfkit/wkhtmltopdf unavailable for PDF render: %s", e)
+    return None, None
+
+
+@app.get("/api/report/{name}/pdf")
+def report_pdf(name: str):
+    """Render a saved report to PDF and return it as a download. Requires an
+    HTML→PDF engine on the server (WeasyPrint or wkhtmltopdf+pdfkit)."""
+    safe = os.path.basename(name)
+    if not safe.endswith(".html"):
+        return JSONResponse(status_code=400, content={"error": "not an html report"})
+    path = os.path.join(_REPORTS_DIR, safe)
+    if not os.path.exists(path):
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    pdf_bytes, engine = _render_report_pdf(path)
+    if pdf_bytes is None:
+        return JSONResponse(status_code=501, content={
+            "error": "pdf_engine_unavailable",
+            "detail": "No HTML→PDF engine is installed on the server.",
+            "fix": "Install one in the server's interpreter:  pip install weasyprint   "
+                   "(or)  pip install pdfkit  plus the wkhtmltopdf binary. "
+                   "The HTML export and the ⤢ open-in-new-tab (print → PDF) work without it.",
+        })
+    out_name = safe[:-5] + ".pdf"  # report-….html → report-….pdf
+    audit("report_pdf", {"file": safe, "engine": engine})
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{out_name}"'})
 
 
 @app.get("/api/crew/profiles")

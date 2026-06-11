@@ -51,6 +51,10 @@ STAGE_REGISTRY = [
     {"key": "vuln",   "name": "Vuln Analyst",
      "desc": "CVE cross-reference + scoped detection queries + severity.",
      "requires": ["recon"], "default": True,  "always_on": False},
+    {"key": "threat", "name": "Threat-Intel Analyst",
+     "desc": "Adversary layer on confirmed findings: MITRE ATT&CK map, actor context, "
+             "attack chains, IOCs/SIEM. Consumes Vuln output — does not re-discover.",
+     "requires": ["vuln"], "default": True,  "always_on": False},
     {"key": "report", "name": "Report Writer",
      "desc": "Synthesises findings into the executive threat report.",
      "requires": [], "default": True,  "always_on": False},
@@ -121,15 +125,22 @@ MODULE_REGISTRY = [
     {"key": "wayback", "group": "Vuln", "name": "Wayback History",
      "desc": "Historical URLs / sensitive paths from web archives.", "default": True},
 
-    # ── Threat Intel ─────────────────────────────────────────────────────────
+    # ── Threat Intel (only used when the threat STAGE is enabled) ────────────
     {"key": "mitre_attack_lookup", "group": "Threat Intel", "name": "MITRE ATT&CK Map",
-     "desc": "Map exposures to ATT&CK techniques for the report.", "default": True},
+     "desc": "Map exposures to ATT&CK techniques for the report.", "default": True, "stage": "threat"},
     {"key": "generate_iocs", "group": "Threat Intel", "name": "IOC Generator",
-     "desc": "Produce indicators of compromise from findings.", "default": True},
+     "desc": "Produce indicators of compromise from findings.", "default": True, "stage": "threat"},
     {"key": "threat_actor_attribution", "group": "Threat Intel", "name": "Threat-Actor Context",
-     "desc": "Note actors historically associated with the exposures.", "default": False},
+     "desc": "Note actors historically associated with the exposures.", "default": False, "stage": "threat"},
     {"key": "red_team_attack_chains", "group": "Threat Intel", "name": "Attack-Chain Hypotheses",
-     "desc": "Narrative attack-chain hypotheses for the report.", "default": False},
+     "desc": "Narrative attack-chain hypotheses for the report.", "default": False, "stage": "threat"},
+
+    # ── Validation (cross-cutting — used by recon/vuln/auth/nmap/report) ──────
+    {"key": "http_probe", "group": "Validation", "name": "Live Finding Validation",
+     "desc": "Curl-style GET/HEAD confirmation that an exposure is really reachable & "
+             "unauthenticated before it is called Critical/High. Scope-gated; no exploitation. "
+             "Always on — agents fall back to passive evidence if a host can't be reached.",
+     "default": True, "always_on": True},
 
     # ── Report ───────────────────────────────────────────────────────────────
     {"key": "get_history", "group": "Report", "name": "History Access",
@@ -151,8 +162,10 @@ DEFAULTS: dict = {
     "nmap_intensity":          "stealth",   # stealth (-T2 SYN) | normal (-sV)
     # ── report ────────────────────────────────────────────────────────────────
     "report_max_tokens": 8000,      # raise this and the report stops truncating
-    "report_section_chars": 8000,   # chars of EACH agent's findings fed to the report
-                                    #   → effectively how many hosts make it into the report
+    "report_section_chars": 60000,  # chars of EACH agent's findings fed to the report's
+                                    #   ANALYSIS step → how many hosts make it into the report.
+                                    #   (Was 8000, which silently dropped findings; the crew now
+                                    #   reads this value, so the UI slider actually controls it.)
     "report_profile":    "technical",  # technical | executive | client
     # ── autonomy ────────────────────────────────────────────────────────────
     "autonomy_mode": "hitl",        # hitl | scoped | full
@@ -396,7 +409,7 @@ PROFILES = {
     "comprehensive": {
         "label": "Comprehensive",
         "desc": "Recommended. Passive + light active across the full pipeline.",
-        "stages": ["recon", "nmap", "vuln", "report"],
+        "stages": ["recon", "nmap", "vuln", "threat", "report"],
         "modules": ["expand_scope", "build_hunt_plan", "correlate_findings",
                     "asn_hunt", "dns_posture", "cert_transparency", "validate_ownership",
                     "historical_dns", "nmap_discovery", "nmap_triage", "analyze_auth",
@@ -409,7 +422,7 @@ PROFILES = {
         "label": "All modules (deep)",
         "desc": "Every capability incl. active scans. Slowest, highest credit use. "
                 "Authorized active targets only — keep autonomy on HITL.",
-        "stages": ["recon", "nmap", "vuln", "report"],
+        "stages": ["recon", "nmap", "vuln", "threat", "report"],
         "modules": [m["key"] for m in MODULE_REGISTRY],
         "limits": {"max_results_per_query": 200, "max_queries_per_run": 24,
                    "report_max_tokens": 12000},
@@ -440,8 +453,117 @@ def apply_profile(name: str) -> dict:
     return update_settings(patch)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Cost model — single source of truth for run-cost estimates.
+# Both the Control Center preview (/api/cost/estimate) and the per-run capture
+# (/api/crew/run → run history) derive their numbers from estimate_run_cost(),
+# so the estimate you see before a run is the same figure that gets recorded.
+# ─────────────────────────────────────────────────────────────────────────────
+import math as _math
+
+# USD per 1,000,000 tokens: (input, output). Local models are free.
+MODEL_PRICING = {
+    "claude-opus-4-8":   (15.0, 75.0),
+    "claude-opus-4-6":   (15.0, 75.0),
+    "claude-opus":       (15.0, 75.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-sonnet-4":   (3.0, 15.0),
+    "claude-sonnet":     (3.0, 15.0),
+    "claude-haiku-4-5":  (0.8, 4.0),
+    "claude-haiku":      (0.8, 4.0),
+    "gpt-4o-mini":       (0.15, 0.6),
+    "gpt-4o":            (5.0, 15.0),
+    "gpt-4-turbo":       (10.0, 30.0),
+    "llama3.2":          (0.0, 0.0),
+    "llama3":            (0.0, 0.0),
+    "llama":             (0.0, 0.0),
+    "mistral":           (0.0, 0.0),
+    "qwen":              (0.0, 0.0),
+}
+_DEFAULT_PRICING = (3.0, 15.0)   # fall back to Sonnet-class pricing
+
+# Rough Shodan equivalence so credits can be shown as an approximate dollar
+# figure for a unified total. Not every plan is billed per credit, so the UI
+# also surfaces the raw credit counts separately.
+_USD_PER_QUERY_CREDIT = 0.0020
+_USD_PER_SCAN_CREDIT  = 0.0010
+
+
+def model_pricing(model: str | None) -> tuple[float, float]:
+    """Return (input_per_M, output_per_M) USD for the given model name."""
+    m = (model or "").lower()
+    for key, val in MODEL_PRICING.items():
+        if key in m:
+            return val
+    return _DEFAULT_PRICING
+
+
+def estimate_run_cost(model: str | None = None, cfg: dict | None = None) -> dict:
+    """Estimate the cost of one crew run for the given (or current) settings.
+
+    Returns a transparent breakdown:
+      * query_credits / scan_credits — Shodan usage
+      * llm_tokens                   — estimated LLM tokens (report + triage + modules)
+      * llm_cost_usd                 — dollar cost of those tokens for `model`
+      * shodan_cost_usd              — approximate dollar value of Shodan credits
+      * total_usd                    — llm_cost_usd + shodan_cost_usd
+    """
+    s = cfg or get_settings()
+    queries = int(s.get("max_queries_per_run", 0) or 0)
+    rpq     = int(s.get("max_results_per_query", 0) or 0)
+    stages  = s.get("stages", {}) or {}
+    modules = s.get("modules", {}) or {}
+
+    # ── Shodan query credits: 1 credit ≈ 100 results, so each query may page. ──
+    pages_per_query = max(1, _math.ceil(rpq / 100)) if rpq else 1
+    query_credits = queries * pages_per_query
+
+    # ── Shodan scan credits: only when the active nmap stage is enabled. ──
+    nmap_on = bool(stages.get("nmap"))
+    scan_credits = int(s.get("nmap_max_hosts_per_call", 0) or 0) if nmap_on else 0
+
+    # ── LLM tokens: report synthesis + per-query triage + per-module analysis. ──
+    report_on     = bool(stages.get("report"))
+    report_tokens = int(s.get("report_max_tokens", 0) or 0) if report_on else 0
+    module_count  = sum(1 for v in modules.values() if v)
+    triage_tokens = queries * 1200          # summarise/rank each query's results
+    module_tokens = module_count * 800      # each enabled capability adds analysis
+    llm_tokens    = report_tokens + triage_tokens + module_tokens
+
+    cin, cout = model_pricing(model)
+    # Assume ~35% input / ~65% output for analyst-style generation.
+    llm_cost_usd = (llm_tokens * 0.35 / 1e6) * cin + (llm_tokens * 0.65 / 1e6) * cout
+
+    shodan_cost_usd = (query_credits * _USD_PER_QUERY_CREDIT
+                       + scan_credits * _USD_PER_SCAN_CREDIT)
+
+    total_usd = llm_cost_usd + shodan_cost_usd
+    return {
+        "queries": queries,
+        "results_per_query": rpq,
+        "query_credits": query_credits,
+        "scan_credits": scan_credits,
+        "llm_tokens": llm_tokens,
+        "model": model or "unknown",
+        "model_input_per_m": cin,
+        "model_output_per_m": cout,
+        "llm_cost_usd": round(llm_cost_usd, 4),
+        "shodan_cost_usd": round(shodan_cost_usd, 4),
+        "total_usd": round(total_usd, 4),
+        "breakdown": {
+            "report_tokens": report_tokens,
+            "triage_tokens": triage_tokens,
+            "module_tokens": module_tokens,
+            "modules_enabled": module_count,
+            "pages_per_query": pages_per_query,
+            "nmap": nmap_on,
+        },
+    }
+
+
 if __name__ == "__main__":
     print("defaults max_results:", max_results())
+    print("estimate_run_cost (sonnet):", estimate_run_cost("claude-sonnet-4-6"))
     print("clamp 99999 ->", clamp_results(99999))
     print("\nstages (default):")
     for s in get_stages():
