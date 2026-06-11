@@ -414,7 +414,7 @@ set CREW_STAGES=recon,report      :: then run the crew
 
 ## 9. Capability modules (28)
 
-Finer-grained than stages: **28 capability modules** across the **8 agents**, each toggle
+Finer-grained than stages: **28 capability modules** across the **9 agents**, each toggle
 mapping to a real tool. Core data-access tools (search/scope/results/history) are shown but
 **locked on** so you can't break the crew.
 
