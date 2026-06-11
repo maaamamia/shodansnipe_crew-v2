@@ -127,7 +127,7 @@ def build_llm(provider: str, model: str | None = None):
     # canonical REPORT_MAX_TOKENS so the Control Center slider actually controls the cap.
     max_tokens = int(os.environ.get("REPORT_MAX_TOKENS")
                      or os.environ.get("LLM_MAX_TOKENS")
-                     or "8000")
+                     or "20000")
 
     if provider == "anthropic":
         key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -136,9 +136,10 @@ def build_llm(provider: str, model: str | None = None):
             print("        PowerShell: $env:ANTHROPIC_API_KEY = 'sk-ant-...'")
             sys.exit(1)
         m = model or "claude-sonnet-4-6"
-        print(f"[LLM] Anthropic — {m} (max_tokens={max(max_tokens, 8000)})")
+        mt = max(max_tokens, 16000)            # Sonnet/Opus support large outputs
+        print(f"[LLM] Anthropic — {m} (max_tokens={mt})")
         return LLM(model=m, api_key=key, provider="anthropic",
-                   max_tokens=max(max_tokens, 8000), temperature=0.2)
+                   max_tokens=mt, temperature=0.2)
 
     elif provider == "openai":
         key = os.environ.get("OPENAI_API_KEY", "")
@@ -146,8 +147,9 @@ def build_llm(provider: str, model: str | None = None):
             print("\n[ERROR] OPENAI_API_KEY not set.")
             sys.exit(1)
         m = model or "gpt-4o-mini"
-        print(f"[LLM] OpenAI — {m} (max_tokens={max(max_tokens, 16000)})")
-        return LLM(model=m, api_key=key, max_tokens=max(max_tokens, 16000), temperature=0.2)
+        mt = min(max(max_tokens, 12000), 16000)  # gpt-4o-mini output ceiling ~16k
+        print(f"[LLM] OpenAI — {m} (max_tokens={mt})")
+        return LLM(model=m, api_key=key, max_tokens=mt, temperature=0.2)
 
     elif provider == "ollama":
         url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
