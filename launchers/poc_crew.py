@@ -1,34 +1,46 @@
 """
 poc_crew.py — ShodanSnipe Parallel Crew Orchestrator v2
 
-Architecture:
-  ┌─────────────────────────────────────────────────────────┐
-  │                    PHASE 1 (PARALLEL)                   │
-  │                                                         │
-  │   RECON AGENT          ║   OSINT AGENT                  │
-  │   ASN → Shodan         ║   Cert transparency            │
-  │   DNS posture          ║   ASN validation               │
-  │   Low-value filter     ║   Cloud assets                 │
-  │   Nmap (skill)         ║   Historical DNS               │
-  │                        ║   Reverse WHOIS                │
-  │                                                         │
-  │   OSINT feeds validated scope + extra queries → RECON   │
-  └─────────────────────────────────────────────────────────┘
-                            │
-  ┌─────────────────────────────────────────────────────────┐
-  │                    PHASE 2 (SEQUENTIAL)                 │
-  │   AUTH AGENT     →    VULN AGENT                        │
-  │   Auth type           CVE lookup                        │
-  │   Exposed paths       CVSS scoring                      │
-  │   JSON secrets        Detection queries                 │
-  │   Posture tags                                          │
-  └─────────────────────────────────────────────────────────┘
-                            │
-  ┌─────────────────────────────────────────────────────────┐
-  │                    PHASE 3 (REPORT)                     │
-  │   Full output from all agents → no truncation           │
-  │   comprehensive (full) or brief (1-page) mode           │
-  └─────────────────────────────────────────────────────────┘
+Architecture — the MANAGER (ASM) is the spine; it plans, owns scope, loops, and correlates:
+
+  PHASE 0 — MANAGER (ASM): scope expansion + HUNT PLAN
+            creative pivots, hypotheses, top blind-spots → directives to every agent
+                              │
+  ┌───────────────────────────────────────────────────────────────┐
+  │            PHASE 1 (PARALLEL) — SEED, then EXPAND              │
+  │                                                               │
+  │   OSINT AGENT  (the SEED — a starting point, NEVER the limit) │
+  │     cert transparency · ASN validation · cloud assets         │
+  │     historical DNS · reverse WHOIS · scope_advisor            │
+  │     → PROPOSES validated scope + a BROAD seed query package    │
+  │                            ║                                  │
+  │   RECON AGENT  (EXPANDS far beyond the seed)                  │
+  │     ASN→Shodan · DNS posture · big→targeted funnel            │
+  │     dynamic/combinatorial queries · FULL host inventory       │
+  │     Nmap (live port confirmation, skill)                      │
+  └───────────────────────────────────────────────────────────────┘
+                              │
+  PHASE 1.6 — MANAGER (ASM): scope RECONCILIATION  (FINAL authority)
+              locks scope from observed metadata; routes the gaps
+                              │
+  PHASE 1.7 — REFINE LOOP  ↺  (bounded by REFINE_MAX_LOOPS; repeats until covered)
+              gaps → OSINT re-verify + RECON re-sweep → re-reconcile →
+              loops back into Phase 1 until NO new in-scope surface appears
+                              │
+  ┌───────────────────────────────────────────────────────────────┐
+  │                    PHASE 2 (SEQUENTIAL)                       │
+  │   AUTH AGENT     →    VULN AGENT                              │
+  │   auth type / exposed paths     CVE → evidence-gated severity │
+  └───────────────────────────────────────────────────────────────┘
+                              │
+  PHASE 2.5 — MANAGER (ASM): cross-agent CORRELATION
+  PHASE 2.6 — THREAT INTEL: TTPs · attack chains · IOCs
+                              │
+  PHASE 3 — REPORT: full inventory · evidence-gated severities · no truncation
+
+  Flow: OSINT SEEDS → RECON/others EXPAND → MANAGER RECONCILES → LOOP until the
+  surface is fully covered. OSINT never caps scope; it kicks it off. The manager
+  holds final authority and keeps the loop running until coverage is confident.
 
 Usage:
     crewai.bat anthropic
@@ -62,6 +74,32 @@ for p in [
 
 SHODANSNIPE_URL = os.environ.get("SHODANSNIPE_URL", "http://127.0.0.1:8000")
 AUTONOMY_MODE   = os.environ.get("MCP_AUTONOMY_MODE", "").lower()
+
+ARCH_BANNER = r"""
+╔══════════════════════════════════════════════════════════════╗
+║  ShodanSnipe — ASM Crew Pipeline                              ║
+║  the MANAGER (ASM) orchestrates every phase ↓                 ║
+╟──────────────────────────────────────────────────────────────╢
+║   0    PLAN ........ scope expansion + hunt plan              ║
+║   1  ┌ OSINT ....... SEED: certs · ASN · cloud · DNS · WHOIS  ║
+║      └ RECON ....... EXPAND: Shodan funnel · full inventory   ║
+║   1.5  NMAP ........ live port confirmation (optional)        ║
+║   1.6  RECONCILE ... MANAGER locks scope (final authority)    ║
+║   1.7  LOOP  ↺ ..... refine until coverage is confident       ║
+║   2    AUTH → VULN . exposure + evidence-gated severity       ║
+║   2.5  CORRELATE ... MANAGER cross-agent patterns             ║
+║   2.6  THREAT ...... TTPs · attack chains · IOCs              ║
+║   3    REPORT ...... full inventory · no truncation           ║
+╟──────────────────────────────────────────────────────────────╢
+║  OSINT seeds → others EXPAND → MANAGER reconciles → LOOP      ║
+╚══════════════════════════════════════════════════════════════╝"""
+
+
+def print_arch_banner() -> None:
+    """Print the pipeline at a glance. Suppress with CREW_NO_BANNER=1."""
+    if os.environ.get("CREW_NO_BANNER", "").lower() not in ("1", "true", "yes", "on"):
+        print(ARCH_BANNER)
+
 
 def _load_autonomy_mode() -> str:
     """Read autonomy mode from server (UI setting), fall back to env var."""
@@ -102,7 +140,28 @@ def get_scope() -> str:
         d = r.json()
         if d.get("is_empty"):          # honor the server's explicit empty flag
             return ""
-        return d.get("query", "") or d.get("summary", "")
+        # If the server ever supplies an explicit Shodan query, trust it.
+        if d.get("query"):
+            return d["query"]
+        # Otherwise BUILD a real scope seed from the structured fields. NEVER fall back to
+        # 'summary' — that is a human count string ("dell: 1 domain(s), 1 org(s)") and using
+        # it as the scope query corrupts target_org and every OSINT lookup downstream.
+        orgs    = d.get("orgs") or []
+        domains = d.get("domains") or []
+        cidrs   = d.get("cidrs") or []
+        asns    = d.get("asns") or []
+        parts = []
+        if orgs:
+            parts.append(f'org:"{orgs[0]}"')      # primary org → also feeds target_org
+        if domains:
+            parts.append(f'hostname:{domains[0]}')  # primary domain
+        if not parts:                              # no org/domain → anchor on net/asn
+            if cidrs:
+                parts.append(f'net:{cidrs[0]}')
+            elif asns:
+                a = str(asns[0])
+                parts.append(f'asn:{a if a.upper().startswith("AS") else "AS"+a}')
+        return " ".join(parts)                     # e.g. org:"Dell" hostname:dell.com
     except Exception:
         return ""
 
@@ -115,6 +174,84 @@ def get_credits() -> tuple[int, int]:
         return u.get("query_credits_remaining", 0), u.get("query_credits_limit", 100)
     except Exception:
         return 0, 0
+
+
+def print_run_history(n: int = 6) -> None:
+    """Show the last few captured runs at startup so terminal runs have visible history too."""
+    try:
+        r = requests.get(f"{SHODANSNIPE_URL}/api/runs", params={"limit": n}, timeout=10)
+        runs = (r.json() or {}).get("runs", [])
+    except Exception:
+        return
+    if not runs:
+        print("[History] no prior runs recorded yet — this will be the first.")
+        return
+    print(f"[History] last {min(n, len(runs))} run(s):")
+    for run in runs[:n]:
+        when  = str(run.get("started_at", ""))[:19].replace("T", " ")
+        scope = (run.get("scope") or run.get("target") or "(none)")
+        if len(scope) > 38:
+            scope = scope[:35] + "..."
+        status = run.get("status", "")
+        src    = run.get("source", "")
+        tail   = f" · {status}" if status else ""
+        tail  += f" · {src}" if src else ""
+        print(f"          {when}  {scope}{tail}")
+
+
+def record_run(record: dict) -> str | None:
+    """Capture THIS run into the server's persisted history (best-effort, never fatal).
+    Returns the run id if recorded. Works whether the crew was started from the CLI or the UI."""
+    try:
+        r = requests.post(f"{SHODANSNIPE_URL}/api/runs", json=record, timeout=10)
+        return (r.json() or {}).get("recorded", {}).get("id")
+    except Exception:
+        return None
+
+
+def extract_findings(report_md: str) -> list[dict]:
+    """Parse the report's '### [N]. Title' finding blocks into structured records so they can be
+    stored, shown on the GUI, and exported with enriched columns. Best-effort — unknown fields
+    just pass through as extra columns."""
+    findings: list[dict] = []
+    # split into blocks that start at a numbered '### ' finding header
+    blocks = re.split(r"\n(?=#{2,3}\s*\[?\d+[\.\)])", report_md or "")
+    key_map = {
+        "risk": "severity", "cvss": "cvss", "confidence": "confidence",
+        "affected": "asset", "evidence": "evidence", "cves": "cve", "cve": "cve",
+        "mitre": "mitre", "impact": "impact", "fix": "fix", "timeline": "timeline",
+        "control surface": "control_surface", "scope": "scope",
+    }
+    for blk in blocks:
+        m = re.match(r"#{2,3}\s*\[?\d+[\.\)]\]?\s*(.+)", blk.strip())
+        if not m:
+            continue
+        title = re.split(r"\s+[—-]\s+", m.group(1).strip())[0].strip()[:200]
+        rec: dict = {"title": title, "source": "report"}
+        # pull every **Key:** value pair in the block
+        for k, v in re.findall(r"\*\*\s*([^*:]+?)\s*:\*\*\s*([^*\n]*?)(?=\s*\*\*|\n|$)", blk):
+            key = key_map.get(k.strip().lower())
+            val = v.strip().rstrip("|").strip()
+            if key and val:
+                rec.setdefault(key, val)
+        if len(rec) > 2:  # title + source + at least one real field
+            findings.append(rec)
+    return findings
+
+
+def record_findings(findings: list[dict], run_id: str | None) -> int:
+    """POST extracted findings to the server store (best-effort). Returns count recorded."""
+    if not findings:
+        return 0
+    for f in findings:
+        if run_id:
+            f["run_id"] = run_id
+    try:
+        r = requests.post(f"{SHODANSNIPE_URL}/api/findings",
+                          json={"findings": findings}, timeout=15)
+        return (r.json() or {}).get("added", 0)
+    except Exception:
+        return 0
 
 
 def build_llm(provider: str, model: str | None = None):
@@ -324,6 +461,8 @@ def main():
     print(f"\n[OK] Server alive — tier: {tier}")
     if ct:
         print(f"[Credits] {cr}/{ct} ({int(100*cr/ct) if ct else 0}%)")
+    print_arch_banner()
+    print_run_history()
 
     # ── Scope ─────────────────────────────────────────────────────────────────
     scope_query = args.scope or get_scope()
@@ -334,9 +473,33 @@ def main():
         sys.exit(1)
 
     m = re.search(r'org:"([^"]+)"', scope_query)
-    target_org = m.group(1) if m else scope_query[:40]
+    if m:
+        target_org = m.group(1)
+    else:
+        # No org in the query — derive a clean name from a hostname/domain or net,
+        # never a raw 40-char slice of the query string.
+        hm = re.search(r'(?:hostname|ssl\.cert\.subject\.cn):([^\s"]+)', scope_query)
+        if hm:
+            target_org = hm.group(1).split(".")[0]      # dell.com -> dell
+        else:
+            target_org = re.split(r'[:\s]', scope_query.strip())[0][:40] or "target"
     print(f"[Scope]  {scope_query}")
     print(f"[Target] {target_org}")
+
+    # Capture this run into the shared history (so terminal runs show up too, not just
+    # Control-Center launches). Best-effort — never blocks the run.
+    _run_id = record_run({
+        "scope": scope_query,
+        "target": target_org,
+        "mode": os.environ.get("CREW_MODE", "cli"),
+        "report": args.report,
+        "stages": [s for s in os.environ.get("CREW_STAGES", "").split(",") if s] or None,
+        "status": "running",
+        "source": "cli",
+        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    })
+    if _run_id:
+        print(f"[Run]    recorded id={_run_id} (view all: GET {SHODANSNIPE_URL}/api/runs)")
 
     # ── Pre-flight: show exactly what's about to run ──────────────────────────
     _mods = [k for k in os.environ.get("CREW_MODULES", "").split(",") if k]
@@ -743,6 +906,16 @@ def main():
     print(f"  DONE — {args.report.upper()} REPORT SAVED")
     print(f"  File: {fpath}")
     print("=" * 62)
+
+    # ── Store structured findings so the GUI can show enriched fields + export ──
+    try:
+        _findings = extract_findings(final_report)
+        _n = record_findings(_findings, _run_id)
+        if _n:
+            print(f"  Findings: {_n} stored (view: GET {SHODANSNIPE_URL}/api/findings "
+                  f"| export: {SHODANSNIPE_URL}/api/findings/export?fmt=csv)")
+    except Exception as e:
+        print(f"  Findings: not stored ({e}) — report file above is unaffected")
 
     # ── Also send it to the server so the GUI "▤ Report" panel renders it as HTML ─
     try:

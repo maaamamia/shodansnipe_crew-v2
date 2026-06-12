@@ -38,6 +38,42 @@ SHODANSNIPE_URL = os.environ.get("SHODANSNIPE_URL", "http://127.0.0.1:8000")
 FLOWS_DIR = os.environ.get("SHODANOPS_FLOWS", os.path.join(_HERE, "ops_flows"))
 os.makedirs(FLOWS_DIR, exist_ok=True)
 
+
+def _crewai_available() -> bool:
+    import importlib.util
+    return importlib.util.find_spec("crewai") is not None
+
+
+def _find_venv_python() -> str | None:
+    """Best-effort: locate a venv interpreter near the project that HAS crewai, so we can tell
+    the user the exact command to use. Checks common venv layouts on Windows + POSIX."""
+    root = os.path.dirname(_HERE)
+    names = (".venv", "venv", "cvenv", "env", ".env")
+    subs  = (["Scripts", "python.exe"], ["bin", "python"])
+    for base in (root, _HERE):
+        for n in names:
+            for sub in subs:
+                cand = os.path.join(base, n, *sub)
+                if os.path.isfile(cand):
+                    return cand
+    return None
+
+
+def _print_crewai_help() -> None:
+    print("\n  [!] crewai is NOT installed in THIS Python — agent phases (osint/recon/…) can't run.")
+    print(f"      current interpreter: {sys.executable}")
+    venv = _find_venv_python()
+    here = os.path.relpath(__file__, os.getcwd()) if os.getcwd() in __file__ else __file__
+    if venv:
+        print(f"      run ShodanOps with the crew's venv instead, e.g.:")
+        print(f"          \"{venv}\" \"{here}\"")
+    else:
+        print("      run ShodanOps with the SAME interpreter your crewai.bat uses (the venv that")
+        print("      has crewai), e.g.:  <your-venv>\\Scripts\\python launchers\\shodan_ops.py")
+        print("      or install it here:  pip install \"crewai[anthropic]\"")
+    print("      (HTTP-only commands — scope / query / profile / mcp — still work without crewai.)\n")
+
+
 BANNER = r"""
   ____  _               _              ___
  / ___|| |__   ___   __| | __ _ _ __  / _ \ _ __  ___
@@ -62,6 +98,11 @@ Commands (every action pauses for your next move — you are in the loop):
                                 phases: osint recon reconcile nmap auth vuln threat report
     step                        run the next phase in the default pipeline, then pause
     pipeline                    show the default phase order + where you are
+
+  TALK (live session — you are the manager directing the crew)
+    talk <message>              talk to the MANAGER (ASM); it answers from session context
+    talk @<agent> <message>     talk to a specific agent (osint recon auth vuln threat manager)
+    talk reset                  clear the conversation history
 
   MCP (use any connected MCP tool from here)
     mcp list                    list tools from a connected MCP server (SHODANSNIPE_MCP_URL)
@@ -93,11 +134,14 @@ class Ops:
         self.llm = None
         self.agents = {}            # phase -> built agent (lazy)
         self.builders = {}          # imported builders
+        self._builder_errors = {}   # mod -> import error
         self.outputs = {}           # phase -> last output string
         self.target_org = os.environ.get("TARGET_ORG", "")
         self.scope_query = os.environ.get("TARGET_SCOPE", "")
         self.pipe_idx = 0
         self.recording = None       # {"name":..., "steps":[...]}
+        self.chat_history = []      # live "talk" turns: [(speaker, text), ...]
+        self._quit = False
         self._load_builders()
 
     # ── lazy import of the crew builders ─────────────────────────────────────
@@ -122,15 +166,79 @@ class Ops:
                 m = __import__(mod)
                 for n in names:
                     self.builders[n] = getattr(m, n, None)
+            except Exception as e:
+                self._builder_errors[mod] = str(e)
+        # If the agent modules failed to import for the crewai reason, say so ONCE, clearly.
+        if not _crewai_available():
+            _print_crewai_help()
+        elif self._builder_errors:
+            for mod, err in self._builder_errors.items():
+                print(f"[warn] {mod} unavailable: {err}")
+
+    def _autoconfigure_llm(self) -> str:
+        """Make the LLM 'just work' with NO manual env vars: pull the provider + keys from the
+        same place the crew uses (the project's llm module, then the server's persisted LLM
+        settings) and load them into this process. Returns the detected provider."""
+        # 1) the project's llm module — same config the crew reads.
+        try:
+            import llm as _llmmod  # noqa
+            s = {}
+            try:
+                s = _llmmod.get_settings() or {}
             except Exception:
-                pass
+                s = {}
+            for envk, sk in (("ANTHROPIC_API_KEY", "anthropic_key"),
+                             ("OPENAI_API_KEY", "openai_key")):
+                v = s.get(sk)
+                if v and not os.environ.get(envk):
+                    os.environ[envk] = v
+            if s.get("provider") and not os.environ.get("LLM_PROVIDER"):
+                os.environ["LLM_PROVIDER"] = s["provider"]
+            if s.get("model") and not os.environ.get("LLM_MODEL"):
+                os.environ["LLM_MODEL"] = s["model"]
+        except Exception:
+            pass
+        # 2) the server's persisted LLM settings (works even if llm module masks keys).
+        try:
+            d = requests.get(f"{SHODANSNIPE_URL}/api/llm/settings", timeout=10).json()
+            for envk, sk in (("ANTHROPIC_API_KEY", "anthropic_key"),
+                             ("OPENAI_API_KEY", "openai_key")):
+                v = d.get(sk)
+                if v and not os.environ.get(envk):
+                    os.environ[envk] = v
+            if d.get("provider") and not os.environ.get("LLM_PROVIDER"):
+                os.environ["LLM_PROVIDER"] = d["provider"]
+        except Exception:
+            pass
+        # 3) detect provider: explicit env wins, else whichever key is present.
+        prov = os.environ.get("LLM_PROVIDER", "").strip().lower()
+        if not prov:
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                prov = "anthropic"
+            elif os.environ.get("OPENAI_API_KEY"):
+                prov = "openai"
+            else:
+                prov = "anthropic"   # sensible default for this project
+        return prov
 
     def _get_llm(self):
         if self.llm is None:
+            if not _crewai_available():
+                _print_crewai_help()
+                raise RuntimeError("crewai not installed in this interpreter — see the note above.")
             if not self._poc:
                 raise RuntimeError("poc_crew unavailable — cannot build an LLM.")
-            provider = os.environ.get("LLM_PROVIDER", "openai")
+            provider = self._autoconfigure_llm()
+            need = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(provider)
+            # Guard BEFORE build_llm so a missing key never triggers its sys.exit (which would
+            # kill the console). Raise a normal error that the REPL catches and recovers from.
+            if need and not os.environ.get(need):
+                raise RuntimeError(
+                    f"no LLM key found for provider '{provider}'. Configure it once in the "
+                    f"Control Center (LLM settings) so it's saved, or set {need} in your env. "
+                    "ShodanOps auto-loads it from there next time — no per-launch setup.")
             self.llm = self._poc.build_llm(provider)
+            print(f"  [llm] provider={provider} model={os.environ.get('LLM_MODEL','(default)')}")
         return self.llm
 
     def _run_phase_crew(self, agent, tasks):
@@ -385,6 +493,82 @@ class Ops:
             print("  usage: flow new|add|save|list|run|show ...")
 
     # ── session ──────────────────────────────────────────────────────────────
+    def cmd_talk(self, args):
+        """Live conversation with your crew. You are the engagement lead/manager giving
+        direction; the agent answers using the current session context.
+            talk <message>            → talk to the MANAGER (ASM)
+            talk @recon <message>     → talk to a specific agent (osint/recon/auth/vuln/threat/manager)
+            talk reset                → clear the conversation history
+        """
+        if not args:
+            print("  usage: talk [<@agent>] <message>   (agents: manager osint recon auth vuln threat)")
+            print("         talk reset   — clear the conversation")
+            return
+        if args[0].lower() == "reset":
+            self.chat_history = []
+            print("  conversation cleared.")
+            return
+
+        agent_map = {
+            "manager": "build_manager_agent", "osint": "build_osint_agent",
+            "recon": "build_recon_agent", "auth": "build_auth_agent",
+            "vuln": "build_vuln_agent", "threat": "build_threat_intel_agent",
+        }
+        who = "manager"
+        if args[0].startswith("@"):
+            who = args[0][1:].lower()
+            args = args[1:]
+        message = " ".join(args).strip()
+        if not message:
+            print("  say something: talk <message>")
+            return
+        builder = agent_map.get(who)
+        if not builder or not self.builders.get(builder):
+            print(f"  no '{who}' agent available (need crewai + {builder}). Try: talk <message>")
+            return
+
+        try:
+            llm = self._get_llm()
+        except Exception as e:
+            print(f"  [err] {e}")
+            return
+
+        # Build a compact session digest so the agent answers grounded in what we have.
+        digest = f"Scope: {self.scope_query or '(unset)'} | Target: {self.target_org or '(unset)'}\n"
+        if self.outputs:
+            digest += "Collected so far:\n"
+            for k, v in self.outputs.items():
+                digest += f"  - {k}: {v[:600]}\n"
+        else:
+            digest += "No phases run yet.\n"
+        convo = "".join(f"{s}: {t}\n" for s, t in self.chat_history[-8:])
+
+        from crewai import Task
+        ag = self.builders[builder](llm)
+        task = Task(
+            description=(
+                "You are speaking LIVE with your engagement lead (the human acting as your "
+                "manager) in an authorized, scoped assessment. Answer their message directly and "
+                "concretely, grounded in the session context. Give your read, propose next moves, "
+                "or carry out the reasoning they ask for. Be specific and brief.\n\n"
+                f"=== SESSION CONTEXT ===\n{digest}\n"
+                f"=== CONVERSATION SO FAR ===\n{convo or '(start of conversation)'}\n"
+                f"=== LEAD'S MESSAGE ===\n{message}\n"),
+            expected_output="A direct, concrete reply to the lead — analysis and/or next steps.",
+            agent=ag,
+        )
+        print(f"\n  …{who} is thinking…")
+        try:
+            reply = self._run_phase_crew(ag, [task])
+        except Exception as e:
+            print(f"  [err] {who}: {e}")
+            return
+        reply = str(reply).strip()
+        self.chat_history.append(("Lead", message))
+        self.chat_history.append((who, reply))
+        print(f"\n  [{who}]\n  " + reply[:2000].replace("\n", "\n  "))
+        print("\n  → keep talking (talk <msg>), or run a phase to act on it.")
+
     def cmd_state(self, args):
         if not self.outputs:
             print("  nothing collected yet.")
@@ -444,10 +628,12 @@ class Ops:
             "run": self.cmd_run, "step": self.cmd_step, "pipeline": self.cmd_pipeline,
             "mcp": self.cmd_mcp, "flow": self.cmd_flow, "state": self.cmd_state,
             "next": self.cmd_next, "set": self.cmd_set, "save": self.cmd_save,
+            "talk": self.cmd_talk, "ask": self.cmd_talk,
             "help": lambda a: print(HELP),
         }
         if cmd in ("quit", "exit"):
-            raise SystemExit
+            self._quit = True
+            return
         fn = table.get(cmd)
         if not fn:
             print(f"  unknown command '{cmd}' — type 'help'")
@@ -469,9 +655,13 @@ class Ops:
             try:
                 self.dispatch(line)
             except SystemExit:
-                print("  bye."); break
+                # A tool or build_llm called sys.exit — do NOT kill the console.
+                print("  [err] a command tried to exit the process — staying in the console "
+                      "(type 'quit' to leave).")
             except Exception as e:
                 print(f"  [err] {e}")
+            if getattr(self, "_quit", False):
+                print("  bye."); break
 
 
 if __name__ == "__main__":
