@@ -670,7 +670,7 @@ SYNTHESIS STEPS:
    USE THE scope_advisor TOOL (action='advise') for every in/out decision — do NOT decide scope from naming
    conventions. A name not matching the org's usual pattern is NEVER grounds for exclusion;
    real assets live on acquired brands, subsidiaries, and cloud/CDN/security-edge providers
-   (e.g. an api.delltechnologies.com host on `Armor Defense Inc`). The advisor returns:
+   (e.g. an api.company.com host on `Armor Defense Inc`). The advisor returns:
      - include  → any solid tie (confirmed CIDR/ASN, hostname/cert tied to a scope domain, or
                   RDAP org match; cloud-hosting is fine when a hostname/cert tie exists),
      - verify   → no tie yet AND nothing contradicts — KEEP it and queue a cert/RDAP/DNS check;
