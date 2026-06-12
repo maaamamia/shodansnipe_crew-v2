@@ -68,7 +68,7 @@ by orchestrating a CrewAI team over a FastAPI server that talks to Shodan, an MC
 a local SQLite store.
 
 The pipeline follows one principle end-to-end:
-**At a glance:** 9 agents · 4 pipeline stages · 30 capability modules · 3 scan profiles ·
+**At a glance:** 8 agents · 4 pipeline stages · 30 capability modules · 3 scan profiles ·
 6 MCP tools · 4 front-ends (GUI / CLI / ShodanOps / AI).
 
 ---
