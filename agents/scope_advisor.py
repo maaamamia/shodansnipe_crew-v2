@@ -5,7 +5,7 @@ WHY THIS EXISTS
 Hard-coded naming conventions (org-name permutations, subdomain prefix lists, "must contain
 the org string") are great for GENERATING candidates but dangerous as INCLUSION filters: an
 asset whose name doesn't fit the pattern gets silently dropped, and that is exactly how real
-findings get excluded. A cloud-hosted Dell API on `Armor Defense Inc` infrastructure, a
+findings get excluded. A cloud-hosted Company API on `Company Inc` infrastructure, a
 subsidiary on an unrelated brand, an acquired company's legacy host — none of them "look like"
 the org, yet all are in scope.
 
