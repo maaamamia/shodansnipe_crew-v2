@@ -301,8 +301,8 @@ launchers\crewai_env\Scripts\python launchers\shodan_ops.py # Windows
 **Talk to your agents as their manager** — you direct, they answer from the live session context:
 ```
 talk what's the most exposed thing we've found so far?
-talk @osint find me live domains for delllabs.net
-talk @recon focus the next sweep on the 143.166 block, skip the CDN ranges
+talk @osint find me live domains for company.com
+talk @recon focus the next sweep on the 143.x block, skip the CDN ranges
 ```
 Note the `@` — `talk @osint …` targets OSINT; without it the message goes to the MANAGER.
 
