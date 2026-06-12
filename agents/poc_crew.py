@@ -106,7 +106,7 @@ def get_scope() -> str:
         if d.get("query"):
             return d["query"]
         # Otherwise BUILD a real scope seed from the structured fields. NEVER fall back to
-        # 'summary' — that is a human count string ("dell: 1 domain(s), 1 org(s)") and using
+        # 'summary' — that is a human count string ("test: 1 domain(s), 1 org(s)") and using
         # it as the scope query corrupts target_org and every OSINT lookup downstream.
         orgs    = d.get("orgs") or []
         domains = d.get("domains") or []
@@ -123,7 +123,7 @@ def get_scope() -> str:
             elif asns:
                 a = str(asns[0])
                 parts.append(f'asn:{a if a.upper().startswith("AS") else "AS"+a}')
-        return " ".join(parts)                     # e.g. org:"Dell" hostname:dell.com
+        return " ".join(parts)                     # e.g. org:"test" hostname:test.com
     except Exception:
         return ""
 
@@ -362,7 +362,7 @@ def main():
         # never a raw 40-char slice of the query string.
         hm = re.search(r'(?:hostname|ssl\.cert\.subject\.cn):([^\s"]+)', scope_query)
         if hm:
-            target_org = hm.group(1).split(".")[0]      # dell.com -> dell
+            target_org = hm.group(1).split(".")[0]      # test.com -> test
         else:
             target_org = re.split(r'[:\s]', scope_query.strip())[0][:40] or "target"
     print(f"[Scope]  {scope_query}")
