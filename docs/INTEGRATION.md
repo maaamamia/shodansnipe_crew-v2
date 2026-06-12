@@ -8,10 +8,10 @@ Two new modules + edits to three agents. Drop the files into your tree:
     agents/vuln_agent.py         # SSH/FTP/SMTP/LDAP/Oracle/MQ-family queries + version capture
     agents/report_agent.py       # protocols grouped w/ versions, HTTP column on the map
 
-## 1. Kill the `org:"…, Inc"` scope leak (the dell' bug)
+## 1. Kill the `org:"…, Inc"` scope leak (the value' bug)
 
 The leak is server-side: Shodan's `org:` is a substring/token match, so `org:"Dell"`
-returns hosts whose org is `dell'Esercito Italiano`. Quoting fixes the *query*; the
+returns hosts whose org is `value'bug bug`. Quoting fixes the *query*; the
 strict matcher fixes the *results*. Wire it into `scope.py::apply_scope` where you
 currently decide `in_scope`:
 
