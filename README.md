@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/CrewAI-multi--agent-39d0d8" alt="CrewAI"/>
   <img src="https://img.shields.io/badge/MCP-streamable--http-5b8cff" alt="MCP"/>
   <img src="https://img.shields.io/badge/interface-GUI%20%7C%20CLI%20%7C%20ShodanOps%20%7C%20AI-46d39a" alt="Interfaces"/>
-  <img src="https://img.shields.io/badge/agents-9-f2b34a" alt="8 agents"/>
+  <img src="https://img.shields.io/badge/agents-8-f2b34a" alt="8 agents"/>
   <img src="https://img.shields.io/badge/modules-30-f2b34a" alt="30 modules"/>
   <img src="https://img.shields.io/badge/SANS-SEC598-f2b34a" alt="SEC598"/>
   <img src="https://img.shields.io/badge/use-authorized%20only-ff5a63" alt="Authorized use only"/>
@@ -15,7 +15,7 @@
 
 <p align="center">
   <b>An agentic attack-surface-management console.</b><br/>
-  A team of <b>9 AI agents</b> plans Shodan searches from your scope, validates ownership with
+  A team of <b>8 AI agents</b> plans Shodan searches from your scope, validates ownership with
   evidence, finds subdomains, confirms live hosts, check OSINT sources, cross-references CVEs, and writes an
   evidence-gated executive threat report — driven from a <b>GUI</b>, the <b>CLI</b>, the new
   <b>ShodanOps</b> human-in-the-loop console, or any <b>MCP client</b>, with <b>4 pipeline
