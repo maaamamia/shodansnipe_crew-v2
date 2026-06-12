@@ -258,6 +258,7 @@ Open the console at **http://127.0.0.1:8000**. Confirm the build with `curl http
 ## 6. The GUI — views & how to use
 
 The web console is a **panel workspace**: a top nav bar opens draggable, resizable neon panels.
+<img width="1269" height="730" alt="image" src="https://github.com/user-attachments/assets/8b340e23-d00a-437d-9636-d4b5fb51afcb" />
 
 | Button | Panel | What it's for |
 |--------|-------|---------------|
