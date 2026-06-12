@@ -6,25 +6,27 @@
   <img src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12"/>
   <img src="https://img.shields.io/badge/CrewAI-multi--agent-39d0d8" alt="CrewAI"/>
   <img src="https://img.shields.io/badge/MCP-streamable--http-5b8cff" alt="MCP"/>
-  <img src="https://img.shields.io/badge/interface-GUI%20%7C%20CLI%20%7C%20AI-46d39a" alt="Interfaces"/>
-  <img src="https://img.shields.io/badge/agents-8-f2b34a" alt="9 agents"/>
-  <img src="https://img.shields.io/badge/modules-28-f2b34a" alt="28 modules"/>
+  <img src="https://img.shields.io/badge/interface-GUI%20%7C%20CLI%20%7C%20ShodanOps%20%7C%20AI-46d39a" alt="Interfaces"/>
+  <img src="https://img.shields.io/badge/agents-8-f2b34a" alt="8 agents"/>
+  <img src="https://img.shields.io/badge/modules-30-f2b34a" alt="30 modules"/>
   <img src="https://img.shields.io/badge/SANS-SEC598-f2b34a" alt="SEC598"/>
   <img src="https://img.shields.io/badge/use-authorized%20only-ff5a63" alt="Authorized use only"/>
 </p>
 
 <p align="center">
   <b>An agentic attack-surface-management console.</b><br/>
-  A team of <b>9 AI agents</b> plans Shodan searches from your scope, validates ownership,
-  confirms live hosts, cross-references CVEs, and writes an executive threat report — driven
-  from a <b>GUI</b>, the <b>CLI</b>, or any <b>MCP client</b>, with <b>4 pipeline stages</b>,
-  <b>28 toggleable capability modules</b>, and <b>3 one-click scan profiles</b>.
+  A team of <b>8 AI agents</b> plans Shodan searches from your scope, validates ownership with
+  evidence, finds subdomains, confirms live hosts, cross-references CVEs, and writes an
+  evidence-gated executive threat report — driven from a <b>GUI</b>, the <b>CLI</b>, the new
+  <b>ShodanOps</b> human-in-the-loop console, or any <b>MCP client</b>, with <b>4 pipeline
+  stages</b>, <b>30 toggleable capability modules</b>, and <b>3 one-click scan profiles</b>.
 </p>
 
 ```
 You set a scope   →   A team of AI agents works it   →   A prioritised threat report
-org:"Acme Corp"       Manager · Recon · OSINT · Nmap        + a hand-off list of the hosts
-net:203.0.113.0/24    Auth · Vuln · Threat-Intel · Report    a human should test intensively
+org:"Acme Corp"       MANAGER plans → OSINT seeds →         evidence-gated findings,
+net:203.0.113.0/24    RECON/others EXPAND → reconcile →     a full host inventory, and a
+                      LOOP until covered → report           hand-off list to test by hand
 ```
 
 > ⚠️ **Authorized use only.** ShodanSnipe is for infrastructure you own or are explicitly
@@ -39,20 +41,23 @@ net:203.0.113.0/24    Auth · Vuln · Threat-Intel · Report    a human should t
 2. [Architecture](#2-architecture)
 3. [The agent team](#3-the-agent-team)
 4. [Install](#4-install)
-5. [Running — three modes](#5-running--three-modes)
+5. [Running — four modes](#5-running--four-modes)
 6. [The GUI — views & how to use](#6-the-gui--views--how-to-use)
-7. [Scan profiles](#7-scan-profiles)
-   - [Report style (brief vs comprehensive)](#7b-report-style-brief-vs-comprehensive)
-8. [Pick your crew (stages)](#8-pick-your-crew-stages)
-9. [Capability modules (28)](#9-capability-modules-28)
-10. [Settings & limits](#10-settings--limits)
-11. [CVE detection research](#11-cve-detection-research)
-12. [The MCP server](#12-the-mcp-server)
-13. [Scope accuracy (cloud-aware)](#13-scope-accuracy-cloud-aware)
-14. [Configuration (env)](#14-configuration-env)
-15. [Project structure](#15-project-structure)
-16. [Troubleshooting](#16-troubleshooting)
-17. [Safety model](#17-safety-model)
+7. [ShodanOps — guided HITL console + live agent chat](#7-shodanops--guided-hitl-console--live-agent-chat)
+8. [Scan profiles & report style](#8-scan-profiles--report-style)
+9. [Pick your crew (stages)](#9-pick-your-crew-stages)
+10. [Capability modules (30)](#10-capability-modules-30)
+11. [Scope: evidence-first (advisor) + cloud-aware](#11-scope-evidence-first-advisor--cloud-aware)
+12. [Dynamic, combinatorial query generation](#12-dynamic-combinatorial-query-generation)
+13. [Severity model — evidence-gated, not CVSS-inflated](#13-severity-model--evidence-gated-not-cvss-inflated)
+14. [Run history & findings store (export anytime)](#14-run-history--findings-store-export-anytime)
+15. [Nmap — self-locating, no PATH surgery](#15-nmap--self-locating-no-path-surgery)
+16. [Settings, limits & depth knobs](#16-settings-limits--depth-knobs)
+17. [The MCP server](#17-the-mcp-server)
+18. [Configuration (env)](#18-configuration-env)
+19. [Project structure](#19-project-structure)
+20. [Troubleshooting](#20-troubleshooting)
+21. [Safety model](#21-safety-model)
 
 ---
 
@@ -63,8 +68,11 @@ by orchestrating a CrewAI team over a FastAPI server that talks to Shodan, an MC
 a local SQLite store. You decide *how much* runs — from a 30-second passive triage to a full
 deep assessment — without editing code.
 
-**At a glance:** 8 agents · 4 pipeline stages · 28 capability modules · 3 scan profiles ·
-6 MCP tools · 3 front-ends (GUI / CLI / AI).
+The pipeline follows one principle end-to-end: **OSINT seeds, everyone else expands, the manager
+reconciles, and it loops until the surface is covered.** OSINT is a starting point, never a cap.
+
+**At a glance:** 8 agents · 4 pipeline stages · 30 capability modules · 3 scan profiles ·
+6 MCP tools · 4 front-ends (GUI / CLI / ShodanOps / AI).
 
 ---
 
@@ -74,23 +82,42 @@ deep assessment — without editing code.
   <img src="assets/flow.svg" alt="ShodanSnipe communication flow" width="100%"/>
 </p>
 
+The **MANAGER (ASM)** is the spine — it plans, owns scope, drives the loop, and correlates. The
+crew prints this at the top of every run (suppress with `CREW_NO_BANNER=1`):
+
+```
+0    PLAN ........ scope expansion + hunt plan        (MANAGER)
+1    OSINT ....... SEED: certs · ASN · cloud · DNS · WHOIS · subdomains
+     RECON ....... EXPAND: Shodan funnel · full inventory
+1.5  NMAP ........ live port confirmation (optional)
+1.6  RECONCILE ... MANAGER locks scope (final authority)
+1.7  LOOP  ↺ ..... refine until coverage is confident
+2    AUTH → VULN . exposure + evidence-gated severity
+2.5  CORRELATE ... MANAGER cross-agent patterns
+2.6  THREAT ...... TTPs · attack chains · IOCs
+3    REPORT ...... full inventory · no truncation
+```
+
 <details>
-<summary>Same flow as a Mermaid diagram</summary>
+<summary>Communication flow as a Mermaid diagram</summary>
 
 ```mermaid
 flowchart LR
     subgraph Front doors
       G["🖥️ Web console<br/>+ Control Center"]
       C["⌨️ crewai.bat"]
+      P["🎛️ ShodanOps<br/>(guided HITL + talk)"]
       M["🤖 MCP client<br/>(Claude Desktop / CrewAI)"]
     end
-    S[("server.py<br/>REST · /mcp · settings · SQLite")]
+    S[("server.py<br/>REST · /mcp · settings · runs · findings · SQLite")]
     G --> S
     C --> S
+    P --> S
     M --> S
     S --> CR["CrewAI pipeline"]
     CR --> SH[("Shodan / OSINT / NVD")]
     S --> RP["📄 Threat report (HTML)"]
+    S --> FD["🗂️ Findings store (CSV/JSON export)"]
 ```
 </details>
 
@@ -103,29 +130,33 @@ The crew talks to the server over HTTP (REST + `/mcp`); it does **not** import t
 
 ```mermaid
 flowchart TD
-    MGR["🧭 MANAGER — scope &amp; orchestration"]
-    R["🔵 RECON — passive Shodan mapping"]
-    O["🟦 OSINT — CT logs, ownership, passive DNS"]
+    MGR["🧭 MANAGER — scope authority &amp; orchestration"]
+    R["🔵 RECON — passive Shodan mapping, full inventory"]
+    O["🟦 OSINT — CT logs, ownership, passive DNS, subdomains (the SEED)"]
     N["🟠 NMAP — stealthy active confirm + triage"]
     H{{"👤 SENIOR OPERATOR (human) — intensive testing"}}
     A["🟣 AUTH — exposed-auth analysis"]
     V["🔴 VULN — CVE cross-ref + detection queries"]
     T["🟡 THREAT-INTEL — ATT&CK, IOCs"]
-    REP["🟢 REPORT — executive threat report"]
-    MGR --> R --> O --> N --> H
-    O --> A --> V --> T --> REP
+    REP["🟢 REPORT — evidence-gated threat report"]
+    MGR --> O --> R --> N --> H
+    MGR -.reconcile + loop.-> O
+    R --> A --> V --> T --> REP
 ```
 
 | # | Agent | File | Core job |
 |---|-------|------|----------|
-| 1 | **Manager** | `manager_agent.py` | Validates scope, plans the hunt, correlates findings |
-| 2 | **Recon** | `recon_agent.py` | Passive Shodan attack-surface mapping |
-| 3 | **OSINT** | `osint_agent.py` | Cert transparency, ownership validation, passive DNS |
+| 1 | **Manager (ASM)** | `manager_agent.py` | Plans the hunt, is the **final scope authority** (reconciliation), correlates findings |
+| 2 | **OSINT** | `osint_agent.py` | Cert transparency, ownership validation, passive DNS, **subdomain discovery** — **proposes** scope + a broad seed query package |
+| 3 | **Recon** | `recon_agent.py` | Passive Shodan mapping; **expands** beyond the seed; emits the **full host inventory** |
 | 4 | **Nmap** | `nmap_recon_agent.py` | Stealthy active confirmation + HIGH/MED/LOW triage |
 | 5 | **Auth** | `auth_agent.py` | Analyses auth mechanisms on exposed services |
-| 6 | **Vuln** | `vuln_agent.py` | CVE cross-reference + scoped detection queries |
+| 6 | **Vuln** | `vuln_agent.py` | CVE cross-reference + scoped detection queries, **evidence-gated severity** |
 | 7 | **Threat-Intel** | `threat_intel_agent.py` | ATT&CK mapping, IOC generation |
 | 8 | **Report** | `report_agent.py` | Synthesises the executive threat report |
+
+All 8 agents share an **assessment doctrine** (discover-don't-assume, modern-infra focus,
+impact-driven scoring, no static checklists) injected into every agent's primary task.
 
 ---
 
@@ -135,7 +166,7 @@ flowchart TD
 - **Python 3.12** for the crew (CrewAI + `fastmcp` wheels are most reliable here; 3.14 can lack wheels)
 - A **Shodan** API key (free tier works)
 - An **LLM** key — Anthropic or OpenAI — or local Ollama
-- **Nmap** *(optional — only for the active Nmap stage)*
+- **Nmap** *(optional — only for the active Nmap stage; now auto-located, see §15)*
 
 There are **two environments** because the server and the crew run on different interpreters:
 the **server** uses your system Python; the **crew** runs in its own `launchers/crewai_env`
@@ -144,18 +175,12 @@ virtualenv (Python 3.12 with CrewAI). Set up both once.
 ### A) Server environment
 
 ```bash
-# dependencies for the server (fastapi, uvicorn, shodan, fastmcp, …)
 pip install -r requirements.txt
-
-# make sure fastmcp is in the SAME interpreter that runs the server
 python -c "import importlib.util; print('fastmcp:', importlib.util.find_spec('fastmcp') is not None)"
 #   False?  ->  python -m pip install fastmcp     (use the exact python that runs server.py)
 ```
 
 ### B) Crew environment — `crewai_env` (one-time)
-
-The crew needs its own Python 3.12 venv with CrewAI installed. Do this **once**; afterwards you
-just activate it (or run `crewai.bat`).
 
 **Windows** — the bat does everything:
 ```bat
@@ -163,236 +188,156 @@ cd launchers
 setup_crewai.bat        :: creates launchers\crewai_env, installs CrewAI + requests, checks nmap
 ```
 
-**Linux / macOS** — there's no bat, so build it by hand (same result):
+**Linux / macOS** — build it by hand:
 ```bash
 cd launchers
 python3.12 -m venv crewai_env          # must be 3.12
 source crewai_env/bin/activate
 pip install --upgrade pip
-pip install "crewai>=0.80.0" requests   # crewai bundles litellm for Anthropic/OpenAI/Ollama
+pip install "crewai[anthropic]>=1.0" requests   # the [anthropic] extra enables prompt caching (§16)
 deactivate
 ```
 
-**Verify the crew env is good** (CrewAI importable in that venv):
+**Verify the crew env:**
 ```bash
-# Windows
-launchers\crewai_env\Scripts\python -c "import crewai, requests; print('crew env OK', crewai.__version__)"
-# Linux / macOS
-launchers/crewai_env/bin/python -c "import crewai, requests; print('crew env OK', crewai.__version__)"
-```
-If that prints a version, the crew env is ready. If `setup_crewai.bat` fails on Windows, it's
-almost always that **Python 3.12 isn't the one on PATH** — install 3.12 and re-run, or build the
-venv by hand pointing at the 3.12 executable (`py -3.12 -m venv crewai_env`).
-
-### C) Drop in the crew tool
-
-```bash
-# place tools/archive_tool.py into your tools/ folder
-#   (backs the wayback + shodan_host_uri modules; without it poc_crew.py raises
-#    ModuleNotFoundError: No module named 'archive_tool')
+launchers/crewai_env/bin/python -c "import crewai, requests; print('crew env OK', crewai.__version__)"   # POSIX
+launchers\crewai_env\Scripts\python -c "import crewai, requests; print('crew env OK', crewai.__version__)" # Windows
 ```
 
-**Nmap (optional).** Install only if you want the active stage; otherwise leave the Nmap
-stage off and everything else runs. Windows: download the `.exe` and tick *Add to PATH*, or
-`choco install nmap`; **reopen the terminal** (PATH refreshes only in new shells); run the
-server from an **Administrator** prompt (SYN scans need it). Verify: `nmap --version`.
+> **ShodanOps runs in the SAME crew venv.** If you launch `shodan_ops.py` with a different Python
+> you'll get `No module named 'crewai'` — ShodanOps now detects this and prints the exact venv
+> command to use (see §7).
+
+### C) Drop in the crew tools
+
+```
+tools/archive_tool.py        # wayback + shodan_host_uri (else poc_crew raises ModuleNotFoundError)
+tools/scope_advisor.py       # evidence-based scope advisor + query expander (§11, §12)
+tools/subdomain_finder.py    # passive subdomain discovery (§11)
+tools/nmap_tool.py           # self-locating nmap wrapper (§15)
+tools/doctrine.py            # shared assessment doctrine (injected into all 8 agents)
+tools/cached_llm.py          # prompt-cache-aware LLM builder (§16)
+```
 
 ---
 
-## 5. Running — three modes
+## 5. Running — four modes
 
-Three front doors onto the same engine; all share the same server-side scope and settings.
+Four front doors onto the same engine; all share the same server-side scope and settings.
 
 | Mode | How | When |
 |------|-----|------|
 | 🖥️ **GUI** | start the server, open the console | Interactive: scope, search, pick crew, read reports |
-| ⌨️ **Crew** | run the orchestrator in a second terminal | Run the full assessment pipeline |
+| ⌨️ **Crew** | run the orchestrator in a second terminal | Run the full assessment pipeline end-to-end |
+| 🎛️ **ShodanOps** | `python launchers/shodan_ops.py` | Guided, one-phase-at-a-time HITL; **talk to your agents live** (§7) |
 | 🤖 **AI / MCP** | point an MCP client at `http://127.0.0.1:8000/mcp` | Drive the 6 tools from Claude Desktop, Cursor, CrewAI |
-
-The **server runs continuously** in one terminal; the **crew is a separate run** in another.
-They're separate processes that talk over HTTP (the crew never imports the server), so running
-both at once is normal.
 
 **Terminal 1 — the server** (system Python is fine):
 ```bash
 cd core
-python server.py          # prompts for a DB passphrase on first run
-                          # set SHODANSNIPE_PASSPHRASE to skip the prompt
+python server.py          # set SHODANSNIPE_PASSPHRASE to skip the DB prompt
 ```
 
-**Terminal 2 — the crew.** It must run in the CrewAI venv (Python 3.12 with `crewai`), which is
-*not* the server's interpreter — so activate that venv first, then run the orchestrator:
-
+**Terminal 2 — the crew** (CrewAI venv):
 ```bash
-# Linux / macOS
 source launchers/crewai_env/bin/activate
 python launchers/poc_crew.py anthropic        # or: openai | ollama
 ```
 ```powershell
-# Windows — crewai.bat just does the two steps above for you
 cd launchers
-crewai.bat anthropic
+crewai.bat anthropic                          # Windows convenience — activates the venv + runs poc_crew
 ```
 
-Open the console at **http://127.0.0.1:8000** (the exact URL the server prints — opening
-`index.html` as a file breaks the API calls).
+The launcher now also **prints recent run history** and **records the current run** at startup, so
+terminal runs show up in the same history as GUI launches (§14).
 
-> **The `.bat` files are Windows convenience only.** `setup_crewai.bat` builds the venv once;
-> `crewai.bat` activates it and runs `poc_crew.py`; `run_server.bat` is just `python server.py`.
-> On Linux/macOS (or if you prefer), run the plain commands above — nothing requires the bats.
-
-To make the GUI's **Run Crew** button use the venv, point the server at whichever launcher you use:
-```bash
-# the server spawns this for /api/crew/run
-export CREW_CMD="launchers/crewai_env/bin/python launchers/poc_crew.py anthropic"   # Linux/macOS
-set     CREW_CMD=crewai.bat anthropic                                               # Windows
-```
-
-**Confirm the server is the current build** (ends the "is this the old `server.py`?" guessing):
-```bash
-curl http://127.0.0.1:8000/api/version
-#  -> shows the file path it loaded + every feature route with all_present: true/false
-```
+Open the console at **http://127.0.0.1:8000**. Confirm the build with `curl http://127.0.0.1:8000/api/version`.
 
 ---
 
 ## 6. The GUI — views & how to use
 
-The web console is a **panel workspace**: a top nav bar opens draggable, resizable neon
-panels. Open the console at `http://127.0.0.1:8000` (served by `server.py`).
-
-<p align="center">
-  <img width="1271" height="674" alt="image" src="https://github.com/user-attachments/assets/64345c1e-7c45-4d13-8102-0fcf198d8eec" />
-</p>
-
-### Views (nav-bar panels)
+The web console is a **panel workspace**: a top nav bar opens draggable, resizable neon panels.
 
 | Button | Panel | What it's for |
 |--------|-------|---------------|
 | **AI** | Assistant | Natural-language → Shodan query help, goal-to-query, explanations |
 | **Query** | Query builder | Compose/run a Shodan search, pick filters and limits |
-| **Results** | Results view | The hosts from your last search — IP, ports, product, risk, in/out-of-scope |
+| **Results** | Results view | Hosts from your last search — IP, ports, product, risk, in/out-of-scope |
 | **History** | Saved searches | Recent queries + result counts; reload a past search |
 | **⚙ MCP** | MCP panel | MCP connection + feeds |
 | **⚑ CVE** | CVE Intel | Paste an advisory → extracted CVE IDs + scoped detection queries |
-| **⊛ Findings** | Findings | De-duplicated findings across all your searches |
-| **◈ Control** | **Control Center** | Profiles, crew, 28 modules, limits, MCP tools, save/run/reset *(new)* |
-| **▤ Report** | **Report** | The latest generated threat report, rendered as HTML *(new)* |
+| **⊛ Findings** | Findings | Stored crew findings with enriched columns — export CSV/JSON (§14) |
+| **◈ Control** | **Control Center** | Profiles, crew, 30 modules, limits, MCP tools, run history, save/run/reset |
+| **▤ Report** | **Report** | The latest generated threat report, rendered as HTML |
 
-Layout tip: drag a panel by its title bar, resize from the corner handle, **⊞** resets the
-layout, and **⊡ Views** / **⊟ WS** save and restore arrangements.
-
-### How to use it — a normal run
-
-1. **Add your Shodan key** (⚙ Config / first-run prompt) and confirm the tier pill shows your plan.
-2. **Set your scope** — orgs, domains, CIDRs, ASNs (the crew and all tools are gated to it).
-3. **Open ◈ Control**, pick a **profile** (Quick / Comprehensive / All), adjust crew/modules/limits
-   if you want, and **Save settings**.
-4. **Run** — either click **Run Crew on Current Results** in the Control Center, or run the
-   crew from a terminal (see §5). Watch progress in `crew_run.log`.
-5. **Read the report** — open **▤ Report**; it shows the latest report the crew posted, as HTML.
-6. **Drill in** — use **Results** and **⊛ Findings** to inspect hosts, and **⚑ CVE** to turn
-   advisories into detection queries.
-
-For an ad-hoc search without the crew: **Query** → run → review in **Results**.
+The normal run is unchanged: add your Shodan key → set scope → **◈ Control** pick a profile +
+Save → Run → read **▤ Report**, drill into **Results** / **⊛ Findings**, turn advisories into
+queries in **⚑ CVE**.
 
 ---
 
-## 6b. The Control Center panel
+## 7. ShodanOps — guided HITL console + live agent chat
 
-The Control Center is where you drive everything without touching code. Open it at:
+`ShodanOps` runs the crew **one phase at a time**, pausing after each so you stay in the loop —
+inspect output, change scope, re-run, branch, or **talk to the agents directly**. It auto-loads
+the LLM provider/key from the same place the crew uses, so there's **no per-launch env setup**.
 
+```bash
+# launch with the crew venv (the one that has crewai)
+launchers/crewai_env/bin/python launchers/shodan_ops.py     # POSIX
+launchers\crewai_env\Scripts\python launchers\shodan_ops.py # Windows
 ```
-http://127.0.0.1:8000/static/control_center.html
+
+**Command set**
+
+| Group | Commands |
+|-------|----------|
+| **Scope** | `scope` · `scope set <IPs/CIDRs/ASNs/domains…>` |
+| **Discover / drive** | `query <shodan query>` · `profile` · `run <phase>` · `step` · `pipeline` |
+| **Talk (live)** | `talk <message>` (manager) · `talk @<agent> <message>` · `talk reset` |
+| **MCP** | `mcp list` · `mcp call <tool> <json>` |
+| **Flows** | `flow new/add/save/list/run/show <name>` |
+| **Session** | `state` · `next` · `set KEY=VALUE` · `save <file>` · `help` · `quit` |
+
+**Talk to your agents as their manager** — you direct, they answer from the live session context:
 ```
+talk what's the most exposed thing we've found so far?
+talk @osint find me live domains for delllabs.net
+talk @recon focus the next sweep on the 143.166 block, skip the CDN ranges
+```
+Note the `@` — `talk @osint …` targets OSINT; without it the message goes to the MANAGER.
 
-<p align="center"><img src="assets/crew_panel.png" alt="Control Center" width="620"/></p>
-
-**How to use it, top to bottom:**
-
-1. **Scan profile** — click **Quick**, **Comprehensive**, or **All**. This sets the stages,
-   modules, and limits in one shot (the active one is highlighted). Start here.
-2. **Pick your crew** — toggle the 4 pipeline stages. `recon` is always on; `nmap`/`vuln`
-   need `recon` (auto-enabled). The run order updates live.
-3. **Capability modules** — 28 toggles grouped by agent. Modules tied to the Nmap stage
-   **grey out** when Nmap is off (that's expected — they only run if Nmap runs).
-4. **Limits & budget** — results/query, queries/run, credit budget, Nmap host cap, report
-   tokens, and **report detail (chars/agent)** (how many hosts make the report).
-5. **Buttons** — **Save settings** persists everything server-side · **Run Crew on Current
-   Results** launches the pipeline · **Reset to defaults** clears all saved settings.
-6. **MCP tools** — a live panel listing the 6 MCP tools and their arguments (reads
-   `/api/mcp/tools`), so you can see them without curl.
-
-Everything saves server-side (SQLite, or a local JSON file for CLI-only use) and survives
-restarts. Any hand-toggle after picking a profile flips it to *custom*.
-
-> **Embedding in `index.html`:** the Control Center ships as a standalone page. To make it a
-> tab in your main UI, add a route (`@app.get("/control")` → `FileResponse(...control_center.html)`)
-> and link it, or paste the panel markup into your page.
+**Zero-config LLM + robust console.** ShodanOps auto-detects the provider from whichever key is
+present (Anthropic → anthropic, OpenAI → openai) and pulls saved keys from the server's LLM
+settings, so it "just works" once you've saved a key in the Control Center. A missing key prints
+a clear, recoverable message and **returns you to the prompt** — it never exits the console. If
+`crewai` isn't in the launching interpreter, it tells you the exact venv command to use.
 
 ---
 
-## 7. Scan profiles
+## 8. Scan profiles & report style
 
-Three presets, increasing in depth **and noise/credit use**. Pick in the GUI or `--profile`.
+Three presets, increasing in depth **and noise/credit use**:
 
 | | **Quick** | **Comprehensive** *(recommended)* | **All modules (deep)** |
 |---|---|---|---|
 | Posture | 100% passive | passive + light active | fully active |
 | Stages | recon → report | recon → nmap → vuln → report | recon → nmap → vuln → report |
-| Modules | ~6 (triage) | ~22 | all 28 |
-| Limits | results 50, queries 6 | results 100, queries 16 | results 200, queries 24, report 12k |
-| Time / credits | seconds, tiny | minutes, moderate | slowest, highest |
-| For | "what's exposed now?" | normal authorized assessment | final deep pass, small authorized scope |
+| Modules | ~6 (triage) | ~24 | all 30 |
+| Limits | results 50, queries 6 | results 100, queries 16 | results 200, queries 24, report 20k |
+| For | "what's exposed now?" | normal authorized assessment | final deep pass, small scope |
 
-Pick a profile in the **◈ Control** panel (Quick / Comprehensive / All) and **Save**. The
-choice is stored server-side and the crew honours it on the next run. The active
-profile is also visible at `GET /api/crew/profiles`.
+Pick a profile in **◈ Control** and **Save** (visible at `GET /api/crew/profiles`). For full-surface
+coverage on large scopes, raise the depth knob: `GLOBAL_LIMIT_MULTIPLIER=3` (or `GLOBAL_NO_LIMITS=1`).
 
-> **All** turns on the genuinely active capabilities (`nmap_scan`, `probe_sensitive_paths`,
-> `cloud_asset_discovery`) and the heaviest credit users (`shodan_host_detail`, `cve_intel`,
-> `asn_hunt`). Run it only against assets you may actively touch, keep autonomy on **HITL**,
-> and set `credit_budget` high enough that the planner doesn't stall mid-run.
+**Report style** is a *separate* knob from the scan profile — it controls write-up length, not
+which stages run: `auto` (default, follows the profile), `brief` (one page), `comprehensive`
+(full). Force it with `--report brief|comprehensive` when running `poc_crew.py` directly.
 
 ---
 
-## 7b. Report style (brief vs comprehensive)
-
-This is a **separate knob from the scan profile** — it controls how verbose the written
-**report** is, not which stages run. They're independent because they share the word
-"comprehensive", which is a common point of confusion: *Quick* is a scan profile, *comprehensive*
-here is a write-up length.
-
-| Style | Output |
-|-------|--------|
-| `auto` *(default)* | follows the profile — a light scan (no vuln, no nmap) → **brief**; a fuller scan → **comprehensive** |
-| `brief` | a tight one-page executive summary |
-| `comprehensive` | the full multi-section report |
-
-**You normally set nothing** — `auto` picks the right length for the profile (so a Quick scan
-gets a brief report). To force it for a single run, pass `--report` when you launch the crew
-directly:
-
-```bash
-# Linux/macOS (venv active) or Windows
-python launchers/poc_crew.py anthropic --report comprehensive
-python launchers/poc_crew.py anthropic --report brief
-```
-
-`crewai.bat` forwards the provider and autonomy mode, not `--report` — so to force a style on
-Windows, run `poc_crew.py` directly as above (the venv must be active), or edit the bat to pass
-it through. The chosen style is printed in the **pre-flight summary** as `Report style:` right
-before the run starts, so you can confirm it.
-
-> The amount of detail that physically fits in the report is also bounded by
-> `report_section_chars` / `report_max_tokens` in the Control Center (§10) — those cap input and
-> output size; `--report` only chooses the template.
-
----
-
-## 8. Pick your crew (stages)
-
-Run only the **4 pipeline stages** you want — full agent, not all-or-nothing.
+## 9. Pick your crew (stages)
 
 | Stage | Key | Skippable | Needs |
 |-------|-----|-----------|-------|
@@ -401,254 +346,271 @@ Run only the **4 pipeline stages** you want — full agent, not all-or-nothing.
 | Vuln | `vuln` | yes | `recon` |
 | Report | `report` | yes | — |
 
-Toggle stages in the **◈ Control** panel and **Save**. The selection is passed to the crew as
-`CREW_STAGES=...` (e.g. `recon,report` to skip Nmap and Vuln), which `poc_crew.py` reads and
-maps onto its `--no-nmap` / agent flags — so the GUI and the crew behave identically. You
-can also set it directly:
-
-```bat
-set CREW_STAGES=recon,report      :: then run the crew
-```
+Toggle in **◈ Control** and **Save**, or set directly: `set CREW_STAGES=recon,nmap,report`.
+`poc_crew.py` reads `CREW_STAGES`/`CREW_MODULES` first, else asks the server — so the GUI and
+the CLI behave identically.
 
 ---
 
-## 9. Capability modules (28)
+## 10. Capability modules (30)
 
-Finer-grained than stages: **28 capability modules** across the **9 agents**, each toggle
-mapping to a real tool. Core data-access tools (search/scope/results/history) are shown but
-**locked on** so you can't break the crew.
+**30 capability modules** across the 8 agents, each toggle mapping to a real tool. Core
+data-access tools are locked on (🔒) so you can't break the crew.
 
 | Group | Modules |
 |-------|---------|
-| **Manager** | expand_scope · build_hunt_plan · correlate_findings |
+| **Manager** | expand_scope · build_hunt_plan · correlate_findings · **scope_advisor** *(advise + expand)* |
 | **Recon** | shodan_search 🔒 · scope_control 🔒 · asn_hunt · dns_posture |
-| **OSINT** | cert_transparency · validate_ownership · historical_dns · reverse_whois · cloud_asset_discovery |
+| **OSINT** | cert_transparency · validate_ownership · historical_dns · reverse_whois · cloud_asset_discovery · **find_subdomains** · **scope_advisor** |
 | **Nmap** | nmap_discovery · nmap_triage · nmap_scan *(need the Nmap stage)* |
 | **Auth** | analyze_auth · classify_posture · json_keyword_scan · probe_sensitive_paths |
 | **Vuln** | get_results 🔒 · cve_intel · shodan_host_uri · wayback |
 | **Threat Intel** | mitre_attack_lookup · generate_iocs · threat_actor_attribution · red_team_attack_chains |
 | **Report** | get_history 🔒 |
 
-Toggle them in the Control Center (grouped by agent) or via `CREW_MODULES=...`. Defaults:
-standard discovery on; heavier/active ones (cloud assets, reverse WHOIS, deeper Nmap,
-sensitive-path probe, threat-actor context, attack-chain hypotheses) off.
+New this release: **`scope_advisor`** (evidence-based in/out decisions + the combinatorial query
+expander, §11–12) and **`find_subdomains`** (passive multi-source subdomain discovery). Both have
+kill-switches (`SCOPE_ADVISOR_TOOL=0`, `SUBDOMAIN_TOOL=0`).
 
 ---
 
-## 10. Settings & limits
+## 11. Scope: evidence-first (advisor) + cloud-aware
 
-Everything that used to be a hard-coded magic number is now a setting — edited in the GUI
-or CLI, persisted server-side, no code edits.
+Scope decisions are made on **evidence, never on naming conventions** — a host whose name doesn't
+"look like" the org (an acquired brand, a subsidiary, a cloud/CDN/security-edge tenant) is never
+silently dropped. The **`scope_advisor`** tool returns:
+
+- **include** — any solid tie: confirmed CIDR/ASN, a hostname or cert tied to a scope domain, or
+  an RDAP org match. **Cloud-hosting is fine** when a hostname/cert tie exists (e.g. an
+  `api.delltechnologies.com` host living on `Armor Defense Inc` infrastructure stays in scope).
+- **verify** — no tie yet *and* nothing contradicts → **keep it and test it**, never discard.
+- **exclude** — only with *positive contrary evidence* (a concrete, unrelated non-edge RDAP org
+  and no tie), handed up with the evidence.
+
+**OSINT proposes, the MANAGER decides.** OSINT makes the evidence-based first pass; the manager's
+reconciliation step is the **final authority** — it re-checks contested assets with the fuller
+recon/nmap picture and can override OSINT. This is the cloud-aware ownership model from before,
+now generalised so name mismatches can't cost you real findings.
+
+---
+
+## 12. Dynamic, combinatorial query generation
+
+The OSINT seed package is **dynamic and combinatorial**, not a handful of static easy queries.
+`scope_advisor` (action `expand`) cross-products every scope **anchor** (`org`, each `net:<cidr>`)
+with every **dimension**:
+
+- **port-groups** — remote-access · databases · mail · web-alt · infra-net · containers · ICS-OT
+- **tech components** — WordPress/Jenkins/GitLab/Grafana/Kibana/Tomcat/Citrix/Confluence/…
+- **misconfig & exposure** — `Index of /`, exposed `.git`, open buckets, expired certs, 401/403,
+  `has_screenshot`, default-cred hints
+- **observed products** — each version recon reports (CVE seeding)
+- plus high-value pivots (cert-CN, **exposed-origin-behind-CDN**) and the `query_advisor` template
+  catalogue (Jenkins/GitLab/K8s/Docker/S3/Swagger/Vault, org-scoped)
+
+A typical two-CIDR scope yields **~130 deduplicated queries**. Recon treats this as a **seed to
+expand from** — it adds runtime fingerprint pivots (`jarm`, `ssl.cert.serial`, `http.favicon.hash`,
+`http.html_hash`) and the engagement loops until coverage is confident.
+
+---
+
+## 13. Severity model — evidence-gated, not CVSS-inflated
+
+Severity reflects **confirmed impact**, not the max CVSS of a version's CVE list:
+
+- **Critical** requires `confidence: confirmed` **and** confirmed exploitability (probe-proven /
+  met exploit conditions). A banner/CPE version alone is **never** Critical.
+- **High** — confirmed exposure of a sensitive service, or a CISA-KEV match on a confirmed-exposed
+  host (inferred exploitability).
+- **Medium** — version-inferred CVEs (banner only), EOL software, hygiene. "OpenSSH 7.4 — 25 CVEs"
+  lands here, not Critical; the report cites the 1–3 genuinely exploitable ones and labels the
+  rest "version-associated, not individually validated".
+- **Severity-confidence coupling** — `inferred` caps at High, `low` caps at Medium.
+
+Every finding carries a mandatory **Evidence** field (what's confirmed vs inferred), **count
+integrity** (exec-summary counts equal the enumerated findings), and the inventory is
+**discovery-driven** — every discovered host appears, including clean ones (SSH, mail, DNS,
+network services), not just the ones that became findings.
+
+---
+
+## 14. Run history & findings store (export anytime)
+
+**Run history** — every run (GUI *or* terminal) is captured to `.shodansnipe_runs.json` and shown
+at the top of each launch.
+- `GET /api/runs` · `POST /api/runs` (the CLI launcher records itself) · `DELETE /api/runs`
+
+**Findings store** — findings are parsed from each report into structured rows and persisted, so
+the GUI can show enriched fields and you can export any time. **Columns are dynamic** — any key on
+a finding becomes a column, so adding a field needs no schema change.
+- `GET /api/findings` (returns findings **+ the full column set**)
+- `POST /api/findings` (record one or a batch) · `DELETE /api/findings`
+- `GET /api/findings/export?fmt=csv|json` — export anytime, dynamic columns
+
+Captured fields include: `title · severity · cvss · confidence · asset · evidence · cve · impact ·
+fix · control_surface · scope · run_id`.
+
+---
+
+## 15. Nmap — self-locating, no PATH surgery
+
+The Nmap stage is optional and discovery-only. The wrapper now **locates the binary itself**, so
+"installed but never detected" is fixed: it searches, in order, `NMAP_PATH` → your `PATH`
+(`shutil.which`) → the standard install locations (`C:\Program Files (x86)\Nmap\nmap.exe`,
+`C:\Program Files\Nmap\nmap.exe`, `/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, `/snap/bin`),
+validating each by running `--version`. It re-resolves lazily at call time, so a PATH that wasn't
+ready at import still works.
+
+```bat
+:: force the path explicitly if you like
+set NMAP_PATH=C:\Program Files (x86)\Nmap\nmap.exe
+```
+
+When detected you'll see `[NMAP] Active — binary: <path>`. **SYN scans (`-sS`) still need
+Administrator/root** (Npcap on Windows); without it the tool returns a clear `permission_error` and
+suggests `intensity=normal` (a `-sV` connect scan, no raw sockets). Hard limits are unchanged: 10
+IPs/call, 30 IPs/session, fixed high-risk port list, T2 timing, 60s host timeout.
+
+---
+
+## 16. Settings, limits & depth knobs
 
 | Setting | Default | Controls |
 |---------|---------|----------|
 | `max_results_per_query` | 100 | results a single `shodan_search` may request |
-| `hard_cap_results` | 1000 | absolute ceiling — requests are **clamped**, never rejected |
+| `hard_cap_results` | 1000 | absolute ceiling — requests are clamped, never rejected |
 | `max_queries_per_run` | 16 | crew query budget per run |
 | `credit_budget` | 1000 | Shodan credit awareness for the planner |
 | `nmap_max_hosts_per_call` | 50 | Nmap batch size |
-| `report_max_tokens` | 8000 | report output length (raise to stop truncation) |
-| `report_section_chars` | 8000 | chars of **each** agent's findings fed to the report → **how many hosts make it in** |
+| `report_max_tokens` | 20000 | report output length (raise to stop truncation) |
+| `report_section_chars` | 60000 | chars of **each** agent's findings fed to the report → how many hosts make it in |
+| `result_depth_multiplier` | 1.0 | scales every per-agent cap (see `GLOBAL_LIMIT_MULTIPLIER`) |
 | `autonomy_mode` | `hitl` | `hitl` / `scoped` / `full` |
 
-Set these in the **◈ Control** panel's limits grid and **Save** (or **Reset to defaults**).
-Programmatically: `GET/POST /api/settings` and `POST /api/settings/reset`. Every knob is also
-an env var the crew reads (`SHODAN_MAX_RESULTS`, `REPORT_SECTION_CHARS`, `CREW_STAGES`,
-`CREW_MODULES`, …):
+**Depth & loop knobs (env):**
+- `GLOBAL_LIMIT_MULTIPLIER=3` — scale every cap ×3 (fuller surface) · `GLOBAL_NO_LIMITS=1` — remove caps
+- `LIMIT_<KEY>=N` — override one specific cap (e.g. `LIMIT_RECON_HOSTS`)
+- `REFINE_MAX_LOOPS=2` — how many times the reconcile→re-engage loop runs (`--refine` to enable)
+- `PROMPT_CACHE=1` — Anthropic prompt caching is automatic with `crewai[anthropic]`; set `0` to disable
 
-```bat
-set SHODAN_MAX_RESULTS=200
-set REPORT_SECTION_CHARS=16000   :: then run the crew
-```
+Set the GUI knobs in **◈ Control** and **Save**; everything is also a `GET/POST /api/settings` and an env var.
 
 ---
 
-## 11. CVE detection research
-
-The Vuln agent doesn't just *list* CVEs — it turns advisories into **scoped Shodan detection
-queries** and counts affected hosts.
-
-```mermaid
-flowchart LR
-    A["Advisory / CVE ID<br/>or version banner"] --> B[cve_intel]
-    B --> C["NVD lookup<br/>CVSS · affected versions"]
-    C --> D["Scoped Shodan<br/>detection query"]
-    D --> E["shodan_search<br/>count in-scope hosts"]
-    E --> F["Ranked verdict<br/>EXPOSED / POSSIBLY / NOT"]
-```
-
-1. **Extract** CVE IDs + version strings from recon/auth findings.
-2. **Enrich** via `cve_intel` (server `/api/llm/cve-intel`, NVD fallback): CVSS, affected versions, exploitability.
-3. **Detect** — build a *scoped* query (e.g. `net:203.0.113.0/24 product:"WebLogic"`) and run it.
-4. **Triage** — rank Critical/High/Medium, flag `confirmed` vs version-`inferred`.
-
-It also flags no-CVE-but-dangerous exposures (Telnet, unauth Docker/Redis/Mongo/Elastic, exposed
-DBs). **Detection only — it confirms exposure, never exploits it.**
-
----
-
-## 12. The MCP server
+## 17. The MCP server
 
 `server.py` mounts a streamable-HTTP MCP endpoint at `http://127.0.0.1:8000/mcp` **in-process**,
 exposing **6 tools**: `shodan_search`, `get_results`, `get_scope`, `set_scope`, `get_history`, `cve_intel`.
 
-**Claude Desktop / Cursor:**
 ```json
 { "mcpServers": { "shodansnipe": { "url": "http://127.0.0.1:8000/mcp" } } }
 ```
 
-**See the tools without curl:** the Control Center's MCP panel lists them (via `/api/mcp/tools`).
-
-> A browser can't speak MCP — a healthy `/mcp` returns **HTTP 406** (or a JSON-RPC
-> "Not Acceptable: client must accept text/event-stream") to an HTML request. That 406 means
-> it's mounted and working. **404** means it's not mounted (install `fastmcp` in the server's
-> interpreter). Test: `curl -i http://127.0.0.1:8000/mcp/`.
+> A browser can't speak MCP — a healthy `/mcp` returns **HTTP 406** to an HTML request (that means
+> it's mounted). **404** means it's not mounted (install `fastmcp` in the server's interpreter).
 
 ---
 
-## 13. Scope accuracy (cloud-aware)
-
-A target's assets often live on AWS/Azure/GCP/Cloudflare, where the IP block is registered to
-the **cloud provider**, not the org. RDAP/ASN therefore can't decide ownership there. The
-`validate_ownership` tool is **cloud-aware**:
-
-- On a hyperscaler/CDN block → verdict `cloud-hosted` (neutral) — **kept**, not dropped.
-- If a hostname/cert ties the IP to a scope domain → `confirmed` (in-scope) even on AWS.
-- A dedicated block with no match → `out-of-scope`, so scope stays tight (no sweeping in
-  unrelated cloud tenants).
-
-This is why an AWS-hosted box that's genuinely the org's no longer vanishes from the report.
-
----
-
-## 14. Configuration (env)
+## 18. Configuration (env)
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | — | LLM key |
-| `LLM_PROVIDER` | `anthropic` | `anthropic` / `openai` / `ollama` |
-| `SHODANSNIPE_URL` | `http://127.0.0.1:8000` | URL the crew talks to |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | — | LLM key (ShodanOps also reads saved keys from the server) |
+| `LLM_PROVIDER` | *(auto)* | `anthropic` / `openai` / `ollama`; **auto-detected** from the present key if unset |
+| `SHODANSNIPE_URL` | `http://127.0.0.1:8000` | URL the crew/ShodanOps talk to |
 | `SHODANSNIPE_PASSPHRASE` | *(prompt)* | DB passphrase — set to skip the prompt |
 | `CREW_STAGES` / `CREW_MODULES` | *(settings)* | comma lists overriding stages/modules |
-| `SHODAN_MAX_RESULTS` / `CREW_MAX_QUERIES` / `REPORT_SECTION_CHARS` | *(settings)* | override limits |
+| `GLOBAL_LIMIT_MULTIPLIER` / `GLOBAL_NO_LIMITS` / `LIMIT_<KEY>` | — | depth scaling (§16) |
+| `REFINE_MAX_LOOPS` | `1` | bounded refine-loop passes (with `--refine`) |
+| `PROMPT_CACHE` | `1` | Anthropic prompt caching toggle |
+| `REPORT_MAX_TOKENS` / `REPORT_SECTION_CHARS` | *(settings)* | report output / input size |
 | `MCP_AUTONOMY_MODE` | `hitl` | `hitl` / `scoped` / `full` |
 | `ENABLE_NMAP` | `1` | `0` = passive only / silence the Nmap warning |
+| `NMAP_PATH` | *(auto)* | explicit nmap binary path (overrides auto-search, §15) |
+| `SCOPE_ADVISOR_TOOL` | `1` | `0` disables the scope advisor + query expander tool |
+| `SUBDOMAIN_TOOL` | `1` | `0` disables the subdomain finder tool |
+| `CREW_NO_BANNER` | — | `1` suppresses the startup architecture banner |
 
-### Setting environment variables
-
-Set the LLM key (and any overrides) **in the terminal that runs the crew**. Two scopes:
-*session* (this terminal only) and *persistent* (every new terminal).
-
-**Linux / macOS**
-```bash
-# session — current shell only
-export ANTHROPIC_API_KEY="sk-ant-..."
-export LLM_PROVIDER="anthropic"
-
-# persistent — add the same lines to ~/.bashrc or ~/.zshrc, then:
-source ~/.bashrc
-```
-
-**Windows — PowerShell**
-```powershell
-# session — current window only
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
-$env:LLM_PROVIDER = "anthropic"
-
-# persistent — survives reboots, applies to new windows
-[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","sk-ant-...","User")
-```
-
-**Windows — Command Prompt (cmd.exe)**
-```bat
-set ANTHROPIC_API_KEY=sk-ant-...        :: session only
-setx ANTHROPIC_API_KEY "sk-ant-..."     :: persistent (open a NEW window to use it)
-```
-
-**A `.env` file (any OS)** — drop a `.env` next to the launcher with `KEY=value` lines; it's
-loaded automatically (python-dotenv is installed). Keep it out of git.
-```
-ANTHROPIC_API_KEY=sk-ant-...
-LLM_PROVIDER=anthropic
-SHODANSNIPE_PASSPHRASE=your-passphrase
-```
-
-> Most users only ever set the **LLM key**. Scope, profile, stages, modules, and limits are
-> better set in the **◈ Control** panel — they persist server-side and the crew reads them, so
-> you don't need the `CREW_*` / `SHODAN_MAX_RESULTS` env vars unless you're scripting headless runs.
+Most users only ever set the **LLM key** and **Shodan key**. Scope, profile, stages, modules, and
+limits are better set in **◈ Control** (persisted server-side). A `.env` next to the launcher is
+loaded automatically.
 
 ---
 
-## 15. Project structure
+## 19. Project structure
 
 ```
 shodansnipe/
-├── _bootstrap.py          import-path setup — every launcher imports this first
+├── _bootstrap.py
 ├── requirements.txt
 │
-├── core/                  the engine (rarely changes)
-│   ├── server.py            FastAPI: REST · /mcp · settings · /api/version · SQLite · serves UI
-│   ├── settings.py          single source of truth: limits · stages · 28 modules · profiles
-│   ├── mcp_tools.py         the 6 MCP tools (+ list_manifest for the UI viewer)
+├── core/
+│   ├── server.py            FastAPI: REST · /mcp · settings · /api/version · runs · findings · SQLite · UI
+│   ├── settings.py          single source of truth: limits · stages · modules · profiles
+│   ├── mcp_tools.py         the 6 MCP tools
 │   ├── shodansnipe_core.py  Shodan execution, rate limiting, risk scoring
+│   ├── query_advisor.py     Shodan filter reference + template catalogue (feeds the query expander)
 │   └── llm.py · threat_feeds.py
 │
-├── agents/                one file per team member (build_*_agent / build_*_tasks)
+├── agents/
 │   ├── manager_agent.py recon_agent.py osint_agent.py nmap_recon_agent.py
 │   ├── auth_agent.py vuln_agent.py threat_intel_agent.py report_agent.py
 │   └── example_crew.py example_crew_mcp.py
 │
 ├── tools/
 │   ├── shodansnipe_tools.py  search · results · scope · CVE · history
-│   ├── archive_tool.py       WaybackTool + ShodanHostURITool  (backs wayback / shodan_host_uri)
+│   ├── scope_advisor.py      evidence-based scope advisor + combinatorial query expander
+│   ├── subdomain_finder.py   passive multi-source subdomain discovery
+│   ├── nmap_tool.py          self-locating nmap wrapper (discovery + triage + scan)
+│   ├── doctrine.py           shared assessment doctrine (injected into all 8 agents)
+│   ├── cached_llm.py         prompt-cache-aware LLM builder
+│   ├── http_validate_tool.py scope-gated HTTP probe (live confirm, secrets masked)
+│   ├── archive_tool.py       WaybackTool + ShodanHostURITool
 │   ├── report_render.py      deterministic HTML report renderer
-│   └── shodan_query.py · nmap_tool.py
+│   └── shodan_query.py
 │
-├── launchers/             entry points you run
+├── launchers/
 │   ├── poc_crew.py          the production orchestrator (full pipeline)
-│   ├── run_server.bat       start the server (run first)
-│   ├── crewai.bat           run the crew (reads scope + mode from the server)
-│   ├── setup_crewai.bat     one-time: build crewai_env (3.12) + deps + nmap check
+│   ├── shodan_ops.py        guided HITL console + live agent chat (talk)
+│   ├── run_server.bat · crewai.bat · setup_crewai.bat
 │   └── crewai_env/          the crew's Python 3.12 virtualenv
 │
-├── static/                index.html  ·  control_center.html  (the Control Center)
-├── reports/               generated HTML reports (served at /api/report/latest)
+├── static/                index.html · control_center.html
+├── reports/               generated HTML reports
+├── README.md              ShodanOps + Nmap quickstart (this doc's companion)
 ├── assets/                banner.svg · flow.svg · gui.png · crew_panel.png
 ├── skills/                BUILDING_AGENTS.md · BUILDING_TOOLS.md
 └── docs/                  TEAM.md · CREWAI_SETUP.md · STRUCTURE.md
 ```
 
-> Place `settings.py` wherever `server.py` imports it from — in this layout that's `core/`.
-> If you keep it beside `server.py`, the import just works.
-
 ---
 
-## 16. Troubleshooting
+## 20. Troubleshooting
 
 | Symptom | Cause / Fix |
 |---------|-------------|
-| `404` on `/api/crew/profiles`, `/api/mcp/tools`, `/api/settings/reset` | Running an **old `server.py`**. Replace it; confirm with `curl /api/version` → `all_present: true`. Watch the Beta-vs-Prod tree trap. |
-| `/mcp` shows `{"detail":"Not Found"}` in a browser | That's a 404 (not mounted). When mounted, a browser/curl gets **406** — that's success. |
-| `MCP endpoint disabled — No module named 'fastmcp'` | `fastmcp` isn't in the server's interpreter. `python -m pip install fastmcp` using the exact python that runs `server.py`. On 3.14 with no wheel, run the server on **3.12**. |
-| Control Center toggles don't change crew behaviour | Settings save + travel as env, but `poc_crew.py` / `shodansnipe_tools.py` must **read** `CREW_STAGES`/`CREW_MODULES`/limits (see `docs/WIRING.md`). Until wired, the crew runs defaults. |
-| `[NMAP] binary not found` | Nmap not installed/on PATH. Install + reopen terminal as Admin, or leave the Nmap stage off / `ENABLE_NMAP=0`. |
-| `[VulnAgent] archive_tool not available` | `tools/archive_tool.py` missing — add it; the `wayback` + `shodan_host_uri` modules depend on it. |
-| `api.host(...) failed: No information available` | Expected — Shodan has no record for that IP (common on CloudFront/CDN edges). Harmless; `ShodanHostURITool` returns "no data". |
-| AWS-hosted target host dropped from scope | Fixed by cloud-aware `validate_ownership` (§13). Pass `hostnames` + `scope_domains` to confirm cloud assets. |
-| Report cut off / missing hosts | Raise `report_section_chars` (input) and/or `report_max_tokens` (output) in the Control Center. |
+| ShodanOps: `No module named 'crewai'` | Launched with the wrong Python. Use the **crew venv** — ShodanOps now prints the exact command. |
+| ShodanOps exits with `[ERROR] ... API key not set` → `bye.` | Fixed — it now auto-loads the saved key and stays at the prompt. Save your LLM key once in **◈ Control**. |
+| `talk osint <msg>` goes to the manager | Use the `@` form: `talk @osint <msg>`. Bare text goes to the MANAGER. |
+| `Schema is too complex for compilation` (400) | Too many/complex tool schemas on one agent. The advisor/subdomain tools use minimal schemas; if it recurs, set `SCOPE_ADVISOR_TOOL=0` or `SUBDOMAIN_TOOL=0`. |
+| `[NMAP] WARNING: nmap could not be located` | Now auto-searches PATH + standard installs. If it still misses, `set NMAP_PATH=C:\Program Files (x86)\Nmap\nmap.exe`. |
+| Nmap runs but no SYN scan | SYN (`-sS`) needs Admin/root + Npcap. Run the terminal as Administrator, or use `intensity=normal`. |
+| OSINT lookups empty (bgpview/crt.sh) | Network reachability — those hosts may be blocked by your egress allowlist. The crew degrades gracefully; subdomain finder uses several sources so one block isn't fatal. |
+| Report cut off / missing hosts | Raise `report_section_chars` + `report_max_tokens`, or run with `GLOBAL_LIMIT_MULTIPLIER=3`. |
+| `404` on `/api/runs`, `/api/findings`, `/api/crew/profiles` | Running an **old `server.py`**. Replace it; confirm with `curl /api/version`. |
+| `/mcp` shows `{"detail":"Not Found"}` in a browser | That's a 404 (not mounted). When mounted a browser/curl gets **406** — that's success. |
 | `404 model: anthropic/claude-...` | Use `claude-sonnet-4-6` (no `anthropic/` prefix) when `provider="anthropic"`. |
-
-Full guide: `docs/TROUBLESHOOTING.md`.
 
 ---
 
-## 17. Safety model
+## 21. Safety model
 
-- **Scope enforced in code, not just prompts** — tools refuse any host outside the active scope.
-- **Discovery only** — recon/OSINT/vuln are passive; Nmap is discovery/enumeration; no exploits,
-  no brute force. Intensive testing stays a human decision.
+- **Scope enforced in code, not just prompts** — tools refuse any host outside the active scope;
+  scope decisions are evidence-based and the manager holds final authority.
+- **Discovery only** — recon/OSINT/vuln are passive; subdomain discovery is passive (no brute
+  force); Nmap is discovery/enumeration; no exploits. Intensive testing stays a human decision.
 - **HITL by default** — actions need approval unless you choose Scoped/Full.
-- **Audit log always on** — every search, scope change, and crew run is recorded.
+- **Audit log always on** — every search, scope change, crew run, and findings export is recorded.
 
 ---
 
