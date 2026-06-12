@@ -14,10 +14,49 @@ This is the "what are we actually hunting for and why" layer.
 """
 from __future__ import annotations
 import os, json, re
+
+# Global overridable caps — see limits.py (GLOBAL_NO_LIMITS / GLOBAL_LIMIT_MULTIPLIER / LIMIT_<KEY>).
+try:
+    from tools.limits import cap as _cap
+except ImportError:
+    try:
+        from limits import cap as _cap
+    except ImportError:
+        def _cap(key, default):
+            if (os.environ.get("GLOBAL_NO_LIMITS", "").lower() in ("1", "true", "yes", "on")):
+                return 1_000_000
+            v = os.environ.get("LIMIT_" + key.upper())
+            if v:
+                try: return max(1, int(v))
+                except ValueError: pass
+            try: m = float(os.environ.get("GLOBAL_LIMIT_MULTIPLIER", "1") or "1")
+            except ValueError: m = 1.0
+            return max(1, int(round(default * m)))
+
 from crewai import Agent, Task
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 import requests
+
+# Shared assessment doctrine (discover-don't-assume, modern-infra focus, impact-driven scoring).
+try:
+    from tools.doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+except ImportError:
+    try:
+        from doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+    except ImportError:
+        _DOCTRINE = ""
+
+
+def _scope_advisor_tools() -> list:
+    """Evidence-based scope advisor + query expander (tools/scope_advisor.py); empty if absent."""
+    for path in ("tools.scope_advisor", "scope_advisor"):
+        try:
+            mod = __import__(path, fromlist=["get_scope_advisor_tools"])
+            return mod.get_scope_advisor_tools()
+        except Exception:
+            continue
+    return []
 
 SHODANSNIPE_URL = os.environ.get("SHODANSNIPE_URL", "http://127.0.0.1:8000")
 
@@ -106,17 +145,64 @@ class ScopeExpanderTool(BaseTool):
                 "Email infrastructure (MX servers, mail gateways)",
                 "Certificate transparency for wildcard certs — reveals all subdomains",
             ],
-            "hunt_hypotheses": [
-                f"HYPOTHESIS 1: {org_name} has a VPN or Citrix gateway exposed — target: "
-                f"vpn.{domain or domain_root+'.com'}, remote.{domain or domain_root+'.com'}",
-                f"HYPOTHESIS 2: Dev/staging environments are less hardened — target: "
-                f"dev.*, staging.*, uat.*, internal.*",
-                f"HYPOTHESIS 3: Acquired subsidiaries have weaker security posture — "
-                f"look for related SSL cert patterns and ASNs",
-                f"HYPOTHESIS 4: Cloud storage exposed — check S3/Azure/GCS naming patterns",
-                f"HYPOTHESIS 5: Management interfaces on non-standard ports — "
-                f"Kubernetes, Jenkins, Grafana, Elasticsearch on 8080/8443/9200/3000",
+            "acquisition_subsidiary_patterns": [
+                f"ssl.cert.subject.o:{org_name}            (same cert Org across IPs = sibling infra)",
+                "Pivot on registrant WHOIS / reverse-WHOIS to find brands under the same owner",
+                "Sibling/adjacent ASNs (AS numbers near a confirmed org ASN often share ownership)",
+                "Legacy brand names + the parent's cert CN appearing together",
             ],
+            "third_party_saas_tenants": [
+                f"{domain_root}.statuspage.io", f"{domain_root}.zendesk.com",
+                f"{domain_root}.atlassian.net", f"{domain_root}.service-now.com",
+                f"{domain_root}.my.salesforce.com", f"{domain_root}.okta.com",
+                f"{domain_root}.bamboohr.com", f"{domain_root}.workday.com",
+            ],
+            "naming_conventions": [
+                "Env tiers: dev / qa / uat / stg / staging / preprod / prod / dr / sandbox",
+                "Region/geo codes: us / eu / emea / apac / na / -east / -west / -1 / -2",
+                "DC/site codes: dc1 / dc2 / site-a / colo / az1 / az2",
+                "Function prefixes: int(ernal) / ext(ernal) / pub / priv / corp / lab",
+            ],
+            "port_hypotheses": [
+                "Non-standard web: 8080 8443 8000 8888 9000 9443 4443 10443",
+                "Mgmt/observability: 3000(Grafana) 5601(Kibana) 9090(Prom) 8500(Consul) 8200(Vault) 15672(RabbitMQ)",
+                "Data: 9200 9300(Elastic) 27017(Mongo) 6379(Redis) 5984(Couch) 5432 1433 1521 3306",
+                "Orchestration: 2375 2376(Docker) 6443 10250(K8s) 2379(etcd) 9000(Portainer)",
+            ],
+            "hunt_hypotheses": [
+                f"H1  Remote-access gateway exposed (VPN/Citrix/RDWeb/GlobalProtect/Pulse) — "
+                f"vpn.*, remote.*, gw.*, access.* on 443/4443/10443.",
+                f"H2  Dev/staging/UAT/QA/preprod less hardened, often on separate ASNs/clouds — "
+                f"dev.*, staging.*, uat.*, qa.*, test.*, sandbox.*.",
+                f"H3  Acquired subsidiaries / legacy brands still expose {org_name} data — pivot on "
+                f"shared cert Org, registrant WHOIS, sibling ASNs.",
+                f"H4  Cloud storage / tenants exposed — S3/Azure Blob/GCS buckets, SharePoint / "
+                f"onmicrosoft / awsapps tenants.",
+                f"H5  Management interfaces on non-standard ports — Jenkins/Grafana/Kibana/Elastic/"
+                f"K8s/Consul/Vault (see port_hypotheses).",
+                f"H6  Exposed ORIGINS behind the CDN/WAF — same cert CN on an org-owned ASN, "
+                f"bypassing Cloudflare/Akamai.",
+                f"H7  API & doc surface — Swagger/OpenAPI/GraphQL/Actuator at /api,/v1,/swagger,"
+                f"/graphql,/actuator.",
+                f"H8  Forgotten/decommissioned hosts — historical DNS still live; dangling CNAMEs "
+                f"(subdomain takeover).",
+                f"H9  Mail & directory surface — MX/SMTP/IMAP, OWA/Exchange, LDAP, open relays, "
+                f"SPF/DMARC gaps.",
+                f"H10 CI/CD & source — GitLab/GitHub Enterprise/Jenkins/Artifactory/Nexus/SonarQube.",
+                f"H11 Data stores reachable — Mongo/Elastic/Redis/Couch/Postgres/MSSQL weak/no auth.",
+                f"H12 Containers/orchestration — Docker API, Kubernetes API/Kubelet, etcd.",
+                f"H13 IoT/OT/edge — printers, cameras, BMS, ICS/SCADA on org nets (502/102/47808).",
+                f"H14 Third-party SaaS tenants leaking branding — statuspage/zendesk/atlassian/"
+                f"servicenow/salesforce communities.",
+                f"H15 Regional/geo footprint — assets in non-primary countries (different ASNs, "
+                f"country codes) frequently unmonitored.",
+            ],
+            "hypothesis_note": (
+                "Every item above is a HYPOTHESIS to TEST, not a confirmed asset. Hand these to "
+                "OSINT/Recon as leads; each must pass the scope + ownership test before it counts. "
+                "Generate MORE org-specific hypotheses from what recon actually finds — this list "
+                "is a starting kit, not a ceiling."
+            ),
         }
 
         return json.dumps({
@@ -280,8 +366,8 @@ class CrossCorrelatorTool(BaseTool):
                 critical_signals.append(label)
 
         return json.dumps({
-            "cross_agent_hits": sorted(cross_hits, key=lambda x: x["seen_by_agents"], reverse=True)[:50],
-            "all_cves": cves[:1000],
+            "cross_agent_hits": sorted(cross_hits, key=lambda x: x["seen_by_agents"], reverse=True)[:_cap("manager_cross_hits", 50)],
+            "all_cves": cves[:_cap("manager_cves", 100)],
             "critical_signals": critical_signals,
             "high_confidence_ips": [h["ip"] for h in cross_hits if h["seen_by_agents"] >= 3],
             "correlation_summary": (
@@ -320,6 +406,7 @@ def build_manager_agent(llm) -> Agent:
             ScopeExpanderTool(),
             HuntPlanTool(),
             CrossCorrelatorTool(),
+            *_scope_advisor_tools(),
         ],
         llm=llm,
         verbose=True,
@@ -354,8 +441,16 @@ what was already found and decide what (if anything) deserves a second, targeted
 STEPS:
 1. AUTHORITATIVE SCOPE: from the data, state the confirmed in-scope set — hosts/domains/CIDRs
    that BOTH tie to the org AND were actually observed. Keep ASN-expanded assets separate.
+   You are the FINAL scope authority here — OSINT only PROPOSED; you decide with the fuller
+   picture (OSINT + Recon + Nmap). For any CONTESTED or borderline asset, call scope_advisor
+   (action='advise') with the evidence you now hold (rdap_org / cert_cn / hostnames /
+   scope_domains / scope_orgs / in_confirmed_cidr) and let the EVIDENCE decide — never a name
+   convention. You may OVERRIDE an OSINT verdict when Recon/Nmap give you evidence OSINT lacked
+   (e.g. Recon confirmed a host OSINT marked 'verify', or a lead OSINT included never resolved).
+   Anything the advisor returns 'verify' that you can't yet resolve goes into gaps, not rejected.
 2. REJECT false leads: OSINT guesses (incl. candidate_alt_domains_unverified) that did NOT
-   resolve or did NOT tie to the org — list them as rejected, with the reason.
+   resolve or did NOT tie to the org — list them as rejected, with the reason. Reject only on
+   positive contrary evidence, not on a name that "doesn't look like" the org.
 3. GAPS — what the first pass missed and should be re-engaged on (be specific, query-ready):
    - osint_leads_not_searched: confirmed OSINT subdomains/CIDRs Recon never queried.
    - alt_domains_to_verify: candidate domains that DID resolve/tie to org but weren't scoped.
@@ -395,7 +490,7 @@ def build_manager_hunt_plan_task(agent, target_org: str,
     return Task(
         description=f"""
 Build the hunt plan for this engagement before any searches run.
-
+{_DOCTRINE}
 Target : {target_org}
 Scope  : {scope_query}
 Domain : {domain or "(infer from org name)"}
@@ -408,14 +503,14 @@ STEP 1 — EXPAND SCOPE:
 STEP 2 — BUILD HUNT PLAN:
   Call build_hunt_plan with the expansion results.
   Assign specific hypotheses to each downstream agent.
-  Rank the top 1000 highest-risk blind spots.
+  Rank the top 100 highest-risk blind spots.
 
 STEP 3 — OUTPUT as JSON:
 {{
   "hunt_plan": {{
     "target": "{target_org}",
     "scope_verdict": "confirmed scope + what we\'re expanding into",
-    "top_1000_blind_spots": ["...", "...", "...", "...", "..."],
+    "top_100_blind_spots": ["...", "...", "...", "...", "..."],
     "osint_directives": {{...}},
     "recon_directives": {{...}},
     "auth_directives": {{...}},
@@ -428,7 +523,7 @@ STEP 3 — OUTPUT as JSON:
 """,
         agent=agent,
         expected_output=(
-            "JSON hunt_plan with top_1000_blind_spots, osint_directives, "
+            "JSON hunt_plan with top_100_blind_spots, osint_directives, "
             "recon_directives, auth_directives, vuln_directives, creative_pivots[]"
         ),
     )

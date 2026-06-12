@@ -25,6 +25,15 @@ except ImportError:
     from nmap_tool import NmapDiscoveryTool, NmapTriageTool, NmapScanTool
     from shodansnipe_tools import GetResultsTool, GetScopeTool
 
+# Shared assessment doctrine (discover-don't-assume, modern-infra focus, impact-driven scoring).
+try:
+    from tools.doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+except ImportError:
+    try:
+        from doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+    except ImportError:
+        _DOCTRINE = ""
+
 
 def build_nmap_agent(llm) -> Agent:
     """Create the Stealthy Network Reconnaissance Specialist."""
@@ -88,6 +97,7 @@ def build_nmap_tasks(agent: Agent, prior_task: Task | None = None) -> list[Task]
     # ── Task 1: Live discovery scan ────────────────────────────────────────
     scan_task = Task(
         description=(
+            _DOCTRINE + "\n"
             "Read the in-scope hosts confirmed by the Recon agent. "
             "Call get_current_results if you need the IP list — it returns the "
             "hosts Shodan found this session.\n\n"

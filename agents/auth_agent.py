@@ -19,6 +19,15 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 import requests
 
+# Shared assessment doctrine (discover-don't-assume, modern-infra focus, impact-driven scoring).
+try:
+    from tools.doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+except ImportError:
+    try:
+        from doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+    except ImportError:
+        _DOCTRINE = ""
+
 SHODANSNIPE_URL = os.environ.get("SHODANSNIPE_URL", "http://127.0.0.1:8000")
 
 # Reuse the validation tool's SSRF guard so auth's own fetchers can't be aimed at
@@ -524,7 +533,7 @@ def build_auth_tasks(agent, recon_output: str) -> list:
         description=f"""
 Probe every high-value host from recon for authentication and exposure.
 Skip LOW-risk hosts with no web ports.
-
+{_DOCTRINE}
 RECON OUTPUT:
 {recon_output[:60000]}
 

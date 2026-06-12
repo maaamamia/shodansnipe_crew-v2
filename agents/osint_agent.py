@@ -19,10 +19,63 @@ Responsibilities:
 """
 from __future__ import annotations
 import os, json, re, socket
+
+# Global overridable caps — see limits.py (GLOBAL_NO_LIMITS / GLOBAL_LIMIT_MULTIPLIER / LIMIT_<KEY>).
+try:
+    from tools.limits import cap as _cap
+except ImportError:
+    try:
+        from limits import cap as _cap
+    except ImportError:
+        def _cap(key, default):
+            if (os.environ.get("GLOBAL_NO_LIMITS", "").lower() in ("1", "true", "yes", "on")):
+                return 1_000_000
+            v = os.environ.get("LIMIT_" + key.upper())
+            if v:
+                try: return max(1, int(v))
+                except ValueError: pass
+            try: m = float(os.environ.get("GLOBAL_LIMIT_MULTIPLIER", "1") or "1")
+            except ValueError: m = 1.0
+            return max(1, int(round(default * m)))
+
 from crewai import Agent, Task
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 import requests
+
+
+def _scope_advisor_tools() -> list:
+    """Evidence-based scope advisor + query expander (tools/scope_advisor.py). Degrades to
+    an empty list if the module isn't on the path, so the agent still builds."""
+    for path in ("tools.scope_advisor", "scope_advisor"):
+        try:
+            mod = __import__(path, fromlist=["get_scope_advisor_tools"])
+            return mod.get_scope_advisor_tools()
+        except Exception:
+            continue
+    return []
+
+
+# Shared assessment doctrine (discover-don't-assume, modern-infra focus, impact-driven scoring).
+try:
+    from tools.doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+except ImportError:
+    try:
+        from doctrine import ASSESSMENT_DOCTRINE as _DOCTRINE
+    except ImportError:
+        _DOCTRINE = ""
+
+
+def _subdomain_tools() -> list:
+    """Passive subdomain finder (tools/subdomain_finder.py). Empty list if unavailable."""
+    for path in ("tools.subdomain_finder", "subdomain_finder"):
+        try:
+            mod = __import__(path, fromlist=["get_subdomain_tools"])
+            return mod.get_subdomain_tools()
+        except Exception:
+            continue
+    return []
+
 
 SHODANSNIPE_URL = os.environ.get("SHODANSNIPE_URL", "http://127.0.0.1:8000")
 
@@ -91,9 +144,9 @@ class CertTransparencyTool(BaseTool):
             return json.dumps({
                 "domain": domain,
                 "total_subdomains": len(subdomains),
-                "subdomains": sorted(list(subdomains))[:100],
+                "subdomains": sorted(list(subdomains))[:_cap("osint_subdomains", 100)],
                 "wildcard_certs": list(wildcard_domains)[:20],
-                "high_interest_subdomains": flagged[:30],
+                "high_interest_subdomains": flagged[:_cap("osint_high_interest", 30)],
                 "shodan_queries": shodan_queries[:15],
                 "note": f"Found {len(entries)} cert log entries",
             }, indent=2)
@@ -498,6 +551,8 @@ def build_osint_agent(llm) -> Agent:
             CloudAssetTool(),
             ReverseWhoisTool(),
             HistoricalDNSTool(),
+            *_subdomain_tools(),
+            *_scope_advisor_tools(),
         ],
         llm=llm,
         verbose=True,
@@ -557,7 +612,7 @@ def build_osint_tasks(agent, target_org: str, scope_query: str,
     footprint_task = Task(
         description=f"""
 Build the intelligence footprint for {target_org}.
-
+{_DOCTRINE}
 Target org : {target_org}
 Scope query: {scope_query}
 Domain hint: {domain or "(infer from org name)"}
@@ -603,28 +658,75 @@ that the Recon agent will use as its PRIMARY search seed.
 
 SYNTHESIS STEPS:
 
-1. SCOPE VERDICT:
+1. SCOPE VERDICT (a PROPOSAL — the Manager/ASM holds final authority):
+   Your verdict is the evidence-based FIRST PASS, not the last word. The Manager reconciles your
+   proposal against what Recon and Nmap actually confirm and locks the authoritative scope, so
+   your job is to give it well-evidenced proposals, not to pre-emptively discard anything.
    - List only confirmed/likely ASNs → confirmed_asns[]
    - List out_of_scope ASNs clearly → out_of_scope_asns[]
    - List all confirmed CIDRs → confirmed_cidrs[]
    - List all confirmed domains and subdomains → confirmed_domains[], high_value_subdomains[]
 
-2. PRIORITISED SHODAN QUERY PACKAGE:
-   For every confirmed asset, generate a specific Shodan query.
-   Do NOT use OR/AND/NOT. One query per asset.
-   Assign priority: CRITICAL | HIGH | MEDIUM
+   USE THE scope_advisor TOOL (action='advise') for every in/out decision — do NOT decide scope from naming
+   conventions. A name not matching the org's usual pattern is NEVER grounds for exclusion;
+   real assets live on acquired brands, subsidiaries, and cloud/CDN/security-edge providers
+   (e.g. an api.delltechnologies.com host on `Armor Defense Inc`). The advisor returns:
+     - include  → any solid tie (confirmed CIDR/ASN, hostname/cert tied to a scope domain, or
+                  RDAP org match; cloud-hosting is fine when a hostname/cert tie exists),
+     - verify   → no tie yet AND nothing contradicts — KEEP it and queue a cert/RDAP/DNS check;
+                  never drop it,
+     - exclude  → ONLY with positive contrary evidence (a concrete, unrelated non-edge RDAP org
+                  and no tie). Even then, hand it up as a proposed exclusion WITH the evidence so
+                  the Manager can confirm — put these in out_of_scope_* with the reason, not a
+                  name guess.
+   Anything the advisor marks "verify" goes into high_value_subdomains / candidate lists so the
+   Recon agent actually tests it — uncertainty means test, not discard.
 
-   Query types to generate:
+2. PRIORITISED SHODAN QUERY PACKAGE (a SEED to expand from — NOT a ceiling):
+   This package is the STARTING POINT, not the limit. Recon takes it and EXPANDS — big→targeted
+   funnel, fingerprint pivots, cohort sweeps — and the engagement LOOPS (manager reconciles →
+   re-engage) until coverage is confident. So err on the side of MORE: a thin package is the #1
+   way real exposures get missed.
+   Call scope_advisor with action='expand' (org / primary domain / confirmed CIDRs, and any
+   products recon reported). It returns a DYNAMIC, COMBINATORIAL matrix — every scope anchor
+   (org / each CIDR) crossed with every dimension (port-groups, tech components, misconfig /
+   exposure signatures, observed products) — NOT a handful of static easy queries. Take that as
+   your base, THEN add your own asset-specific and creative queries on top. Do NOT use
+   OR/AND/NOT. One query per line. Assign priority: CRITICAL | HIGH | MEDIUM
+
+   Be CREATIVE and COMBINATORIAL — cover the combination space, not the obvious filters:
    - hostname:<subdomain> for each high-value subdomain
-   - ssl.cert.subject.cn:<domain> for cert pivots
+   - ssl.cert.subject.cn:<domain> for cert pivots (forgotten subdomains/origins)
+   - ssl.cert.serial:<serial> / ssl.cert.fingerprint:<hash> / jarm:<hash> to pivot on a cert
+   - http.favicon.hash:<h> (ONLY with a corroborating signal) and http.html_hash:<h>
+   - http.component:"<tech>" × each scope anchor to enumerate a product cohort
+   - port-group × anchor (remote-access / databases / mail / containers / ICS-OT / infra-net)
+   - misconfig × anchor (Index of /, .git, expired cert, 401/403, open buckets, default creds)
    - org:"<confirmed org name>" for each confirmed org variant
-   - net:<cidr> for each confirmed CIDR
-   - http.title:"<product>" if product names found in certs
+   - net:<cidr> for each confirmed CIDR (sweep the whole block — where unknowns surface)
+   - modern-infra: Jenkins / GitLab / K8s / Docker / S3 / Swagger / Vault, scoped to the org
+   - exposed-origin-behind-CDN: ssl.cert.subject.cn:<domain> minus the CDN orgs
    - Cloud: http.title:"<org>" port:443 for cloud assets
+   Static easy queries (org:"X" alone) are table stakes — the value is in the combinations.
 
-   CRITICAL priority: vpn.*, rdweb.*, citrix.*, jenkins.*, admin.*
-   HIGH priority:     api.*, portal.*, staging.*, dev.*, grafana.*, kibana.*
-   MEDIUM priority:   general org/net queries, historical IPs
+   PRIORITY IS EVIDENCE-DRIVEN, NOT NAME-DRIVEN. Do NOT assign priority from a fixed list of
+   subdomain prefixes — that tunnels the plan onto guessed "criticals" and buries the real
+   issue. Set each query's priority from what the DATA actually shows:
+   - CRITICAL — a confirmed ANOMALY or high-value exposure, regardless of the host's name:
+       a private / RFC1918 IP appearing in PUBLIC DNS (split-horizon / misconfig leak — e.g.
+       staging.* → 10.x), a dangling CNAME (subdomain-takeover candidate), an exposed ORIGIN
+       behind a CDN, an expired or mismatched cert, or an already-observed unauthenticated
+       sensitive service. A NAME never makes something Critical — EVIDENCE does.
+   - HIGH — the BROAD-COVERAGE anchors that surface the unknowns: net:<confirmed CIDR> (sweep
+       the WHOLE block — this is where you find what you didn't predict, so it is HIGH, never
+       Medium), ssl.cert.subject.cn:<domain>, and org:"<confirmed variant>". Plus confirmed
+       hosts whose function is plausibly sensitive (auth / admin / api / remote-access) — but
+       that prefix is a HINT to verify, not an automatic label.
+   - MEDIUM — routine confirmed assets and historical IPs with nothing notable.
+   BALANCE: a name prefix (vpn / api / admin / jenkins / ...) RAISES attention; it does not set
+   priority by itself. Never let the named guesses crowd out the broad net: / cert / org sweeps
+   — those are exactly what catch the true issue a name list would miss. If the data shows an
+   anomaly, it leads the package, even if its hostname looks boring.
 
 3. THREAT SURFACE NOTES:
    2-3 sentences on the most surprising or concerning thing found.
