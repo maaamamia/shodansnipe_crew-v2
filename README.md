@@ -15,8 +15,8 @@
 
 <p align="center">
   <b>An agentic attack-surface-management console.</b><br/>
-  A team of <b>8 AI agents</b> plans Shodan searches from your scope, validates ownership with
-  evidence, finds subdomains, confirms live hosts, cross-references CVEs, and writes an
+  A team of <b>9 AI agents</b> plans Shodan searches from your scope, validates ownership with
+  evidence, finds subdomains, confirms live hosts, check OSINT sources, cross-references CVEs, and writes an
   evidence-gated executive threat report — driven from a <b>GUI</b>, the <b>CLI</b>, the new
   <b>ShodanOps</b> human-in-the-loop console, or any <b>MCP client</b>, with <b>4 pipeline
   stages</b>, <b>30 toggleable capability modules</b>, and <b>3 one-click scan profiles</b>.
