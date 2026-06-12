@@ -63,15 +63,12 @@ net:203.0.113.0/24    RECON/others EXPAND → reconcile →     a full host inve
 
 ## 1. What it is
 
-ShodanSnipe turns a **scope** (orgs, domains, CIDRs, ASNs) into a **prioritised threat report**
+ShodanSnipe turns a **scope** (orgs, domains,OSINT,CIDRs, ASNs) into a **prioritised threat report**
 by orchestrating a CrewAI team over a FastAPI server that talks to Shodan, an MCP endpoint, and
-a local SQLite store. You decide *how much* runs — from a 30-second passive triage to a full
-deep assessment — without editing code.
+a local SQLite store.
 
-The pipeline follows one principle end-to-end: **OSINT seeds, everyone else expands, the manager
-reconciles, and it loops until the surface is covered.** OSINT is a starting point, never a cap.
-
-**At a glance:** 8 agents · 4 pipeline stages · 30 capability modules · 3 scan profiles ·
+The pipeline follows one principle end-to-end:
+**At a glance:** 9 agents · 4 pipeline stages · 30 capability modules · 3 scan profiles ·
 6 MCP tools · 4 front-ends (GUI / CLI / ShodanOps / AI).
 
 ---
@@ -383,7 +380,7 @@ silently dropped. The **`scope_advisor`** tool returns:
 
 - **include** — any solid tie: confirmed CIDR/ASN, a hostname or cert tied to a scope domain, or
   an RDAP org match. **Cloud-hosting is fine** when a hostname/cert tie exists (e.g. an
-  `api.delltechnologies.com` host living on `Armor Defense Inc` infrastructure stays in scope).
+  `domain.com` host living on `Domain Inc` infrastructure stays in scope).
 - **verify** — no tie yet *and* nothing contradicts → **keep it and test it**, never discard.
 - **exclude** — only with *positive contrary evidence* (a concrete, unrelated non-edge RDAP org
   and no tie), handed up with the evidence.
