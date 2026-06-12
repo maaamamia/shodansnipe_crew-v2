@@ -39,11 +39,93 @@ os.chdir(_HERE)  # so relative paths (static/, launchers/) resolve too
 
 import db
 import settings
-from shodansnipe_core import ShodanQuery, serialize_result, DataValidator
+from shodansnipe_core import ShodanQuery, serialize_result as _serialize_result_raw, DataValidator
 from scope import Scope, apply_scope, audit
 from diff_store import save_snapshot, diff
 from query_advisor import FILTER_REFERENCE, TEMPLATES, render_template, suggest_followups
 import threat_feeds
+
+# ── Host hygiene: cap absurd port lists and flag CDN/WAF shared edges ─────────────
+# Some hosts (esp. CDN/WAF front-ends like Incapsula/Cloudflare/Akamai) report hundreds
+# of "open" ports that are shared infrastructure, NOT real service exposure. Left raw,
+# one such host dumps >1000 lines of JSON into an agent's context and can stall it. We
+# cap the port list (interesting-first), strip the bulky triple port_sources breakdown,
+# flag the host, and de-inflate a purely port-based Critical on a CDN edge. Tunable via
+# MAX_PORTS_PER_HOST. Every endpoint that serializes a result inherits this.
+_CDN_NAMES = (
+    "incapsula", "imperva", "cloudflare", "akamai", "fastly", "cloudfront",
+    "sucuri", "stackpath", "edgecast", "edgio", "limelight", "front door",
+    "cdn77", "keycdn", "cachefly", "bunnycdn", "g-core", "gcore", "qrator",
+)
+_SIGNAL_PORTS = [
+    21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 389, 443, 445, 465, 587, 636,
+    993, 995, 1433, 1521, 2375, 2376, 3306, 3389, 5432, 5601, 5900, 5985, 6379,
+    6443, 8080, 8443, 9000, 9200, 9300, 10250, 11211, 27017,
+]
+_MAX_PORTS_PER_HOST = max(5, int(os.environ.get("MAX_PORTS_PER_HOST", "40") or "40"))
+
+def _ports_interesting_first(ports):
+    sig = [p for p in _SIGNAL_PORTS if p in ports]
+    rest = sorted(p for p in ports if p not in _SIGNAL_PORTS)
+    seen, out = set(), []
+    for p in sig + rest:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+def _cap_and_flag_host(s):
+    ports = s.get("ports") or []
+    try:
+        ports = [int(p) for p in ports]
+    except Exception:
+        pass
+    n = len(ports)
+    org_blob = " ".join(str(s.get(k, "")) for k in ("org", "asn_name", "asn")).lower()
+    tags = [str(t).lower() for t in (s.get("tags") or [])]
+    is_cdn = ("cdn" in tags) or any(name in org_blob for name in _CDN_NAMES)
+
+    # Always drop the bulky shodan/internetdb/enriched port triple-listing — pure context bloat.
+    s.pop("port_sources", None)
+
+    if n > _MAX_PORTS_PER_HOST:
+        s["port_count"] = n
+        s["ports_capped"] = True
+        s["high_port_count_flag"] = True
+        s["ports"] = _ports_interesting_first(ports)[:_MAX_PORTS_PER_HOST]
+        if is_cdn:
+            s["ports_note"] = (
+                f"{n} ports reported, but this is a CDN/WAF shared edge — the port list is shared "
+                f"infrastructure, NOT real service exposure. Showing top {_MAX_PORTS_PER_HOST}.")
+        else:
+            s["ports_note"] = (
+                f"{n} ports reported (unusually high). Showing top {_MAX_PORTS_PER_HOST}; confirm "
+                "real exposure with nmap before trusting this list.")
+
+    if is_cdn:
+        s["cdn_shared"] = True
+        s["cdn_note"] = (
+            "On a CDN/WAF (shared edge). Ports and the many hostnames here are shared across "
+            "unrelated tenants — do not attribute them to one target or rate Critical off the "
+            "raw port list.")
+        # De-inflate a purely port-based Critical on a CDN edge (leave CVE-based risk alone).
+        rl = str(s.get("risk_level") or "")
+        rfull = str(s.get("risk_full") or s.get("risk_simplified") or "")
+        if rl.lower() == "critical" and "port" in rfull.lower():
+            s["risk_level_original"] = rl
+            s["risk_level"] = "Informational"
+            s["risk_full"] = "Informational (CDN/WAF shared edge — port-based risk not host-attributable)"
+            s["risk_simplified"] = "Informational - CDN shared edge"
+    return s
+
+def serialize_result(r):
+    """Wraps core serialize_result: caps huge port lists, strips port_sources bloat, and
+    flags CDN/WAF shared edges so one front-end host can't flood or mislead an agent."""
+    s = _serialize_result_raw(r)
+    try:
+        return _cap_and_flag_host(s)
+    except Exception:
+        return s   # never break serialization over a flagging bug
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -197,6 +279,43 @@ def _record_run(record: dict) -> dict:
     runs.insert(0, record)
     _save_runs(runs)
     return record
+
+
+# ── Findings persistence ──────────────────────────────────────────────────────
+# Structured findings captured from crew runs so the GUI can show enriched fields, the user can
+# add arbitrary columns (any key on a finding becomes a column), and export at any time. Same
+# durable JSON-store pattern as runs/scope above — independent of the search-results DB.
+_FINDINGS_STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".shodansnipe_findings.json")
+_MAX_FINDINGS_KEPT = 5000
+
+def _load_findings() -> list[dict]:
+    try:
+        with open(_FINDINGS_STORE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+def _save_findings(items: list[dict]) -> None:
+    try:
+        with open(_FINDINGS_STORE, "w", encoding="utf-8") as f:
+            json.dump(items[:_MAX_FINDINGS_KEPT], f, indent=2)
+    except Exception:
+        pass
+
+def _finding_columns(items: list[dict]) -> list[str]:
+    """Union of all keys across findings, with the common ones first — so the GUI/export show
+    every column the user has added, in a stable, readable order."""
+    preferred = ["id", "title", "severity", "confidence", "asset", "ip", "port", "hostname",
+                 "product", "version", "cve", "evidence", "impact", "fix", "scope",
+                 "control_surface", "source", "run_id", "recorded_at"]
+    seen = list(preferred)
+    extra: list[str] = []
+    for it in items:
+        for k in it.keys():
+            if k not in seen and k not in extra:
+                extra.append(k)
+    return [c for c in preferred if any(c in it for it in items)] + extra
 
 _last_results: list[dict] = []
 _last_query: str = ""
@@ -606,6 +725,48 @@ def get_scope() -> dict:
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
+_ANCHOR_KEYS = (
+    "hostname", "org", "net", "asn", "ip", "autonomous_system",
+    "ssl.cert.subject.cn", "ssl.cert.subject.o", "ssl.cert.issuer.cn",
+)
+
+def _query_anchor_problem(query: str) -> str:
+    """Return a human-readable reason if a query has no usable scope anchor — i.e. it would
+    scan the whole internet (e.g. 'hostname:' with no value, 'ssl.cert.subject.cn:' empty,
+    a trailing-dot hostname like 'hostname:accounts.', or only negations). Returns '' when the
+    query has at least one usable positive constraint. This is what stops broad queries from
+    being sent to Shodan and timing out."""
+    import shlex
+    q = (query or "").strip()
+    if not q:
+        return "empty query"
+    try:
+        toks = shlex.split(q)
+    except ValueError:
+        toks = q.split()
+    positive_value = False     # any usable positive constraint (filter value or bare keyword)
+    void_anchors = []
+    for t in toks:
+        if not t or t.startswith("-"):     # negations never anchor scope
+            continue
+        if ":" not in t:                   # bare keyword term — usable on its own
+            positive_value = True
+            continue
+        key, _, val = t.partition(":")
+        val = val.strip().strip('"').strip("'")
+        if not val:                        # hostname: / org: / ssl.cert.subject.cn:  (empty)
+            void_anchors.append(f"{key}:")
+        elif val.endswith("."):            # hostname:accounts.  → empty domain
+            void_anchors.append(f"{key}:{val}")
+        else:
+            positive_value = True          # a real, non-empty filter value
+    if positive_value:
+        return ""
+    if void_anchors:
+        return "anchor(s) have empty/malformed values: " + ", ".join(void_anchors[:4])
+    return "no positive scope anchor (only negations)"
+
+
 @app.post("/api/search")
 async def search(body: SearchIn) -> dict:
     global _last_results, _last_query
@@ -634,6 +795,26 @@ async def search(body: SearchIn) -> dict:
     # (which both call /api/search) obey the saved max-results preference.
     body.limit = settings.clamp_results(min(body.limit, settings.max_results()))
     audit("search_start", {"query": body.query, "limit": body.limit, "enrich": body.enrich})
+
+    # Guard: refuse internet-wide queries (empty/malformed anchors) BEFORE hitting Shodan.
+    # An empty filter like 'hostname:' or 'ssl.cert.subject.cn:' scans the whole internet and
+    # times out; reject it with an actionable message so the agent re-queries with an anchor.
+    anchor_problem = _query_anchor_problem(body.query)
+    if anchor_problem:
+        audit("search_refused_broad", {"query": body.query, "reason": anchor_problem})
+        return {
+            "error": "query_too_broad",
+            "detail": f"Refusing internet-wide search — {anchor_problem}.",
+            "results": [],
+            "total_returned": 0,
+            "in_scope": 0,
+            "out_of_scope": 0,
+            "warning": (
+                f"Refused: {anchor_problem}. Anchor the query to scope "
+                "(org:\"...\" / net:CIDR / asn:ASxxxx / hostname:domain). A filter with an empty "
+                "value (e.g. 'hostname:') searches the whole internet and will time out."
+            ),
+        }
 
     raw_results, warning = await engine.execute_query(
         body.query, limit=body.limit, tags=body.tags, enrich=body.enrich
@@ -1522,12 +1703,97 @@ def runs_list(limit: int = 50) -> dict:
     return {"runs": runs[: max(1, limit)], "total": len(runs)}
 
 
+@app.post("/api/runs")
+def runs_record(body: dict = Body(...)) -> dict:
+    """Record a crew run launched OUTSIDE the server (e.g. the CLI launcher / crewai.bat) so
+    terminal runs appear in the SAME history as Control-Center-launched ones. The launcher
+    posts what it knows (scope, target, mode, stages, report path, status); the server stamps
+    an id/timestamp if missing."""
+    rec = dict(body or {})
+    rec.setdefault("id", uuid4().hex[:12])
+    rec.setdefault("started_at", datetime.now(timezone.utc).isoformat())
+    rec.setdefault("source", "cli")
+    audit("crew_run_recorded", {"scope": rec.get("scope"), "source": rec.get("source")})
+    return {"recorded": _record_run(rec)}
+
+
 @app.delete("/api/runs")
 def runs_clear() -> dict:
     """Clear the captured run history."""
     _save_runs([])
     audit("runs_cleared", {})
     return {"cleared": True}
+
+
+# ── Findings: store / list / export (dynamic columns) ─────────────────────────
+@app.post("/api/findings")
+def findings_record(body: dict = Body(...)) -> dict:
+    """Record one finding (dict) or a batch ({"findings":[...]}). Any keys are accepted —
+    each becomes a column. The server stamps id/recorded_at if missing."""
+    incoming = body.get("findings") if isinstance(body, dict) and "findings" in body else [body]
+    if not isinstance(incoming, list):
+        incoming = [incoming]
+    items = _load_findings()
+    added = 0
+    for f in incoming:
+        if not isinstance(f, dict) or not f:
+            continue
+        rec = dict(f)
+        rec.setdefault("id", uuid4().hex[:12])
+        rec.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
+        items.insert(0, rec)
+        added += 1
+    _save_findings(items)
+    audit("findings_recorded", {"added": added, "run_id": (incoming[0] or {}).get("run_id") if incoming else None})
+    return {"added": added, "total": len(items)}
+
+
+@app.get("/api/findings")
+def findings_list(limit: int = 500, run_id: str = "") -> dict:
+    """Findings newest-first, plus the full column set (so the GUI can render every column,
+    including ones you've added)."""
+    items = _load_findings()
+    if run_id:
+        items = [f for f in items if f.get("run_id") == run_id]
+    items = items[: max(1, limit)]
+    return {"findings": items, "columns": _finding_columns(items), "total": len(items)}
+
+
+@app.delete("/api/findings")
+def findings_clear(run_id: str = "") -> dict:
+    """Clear all findings, or only those from one run_id."""
+    if run_id:
+        kept = [f for f in _load_findings() if f.get("run_id") != run_id]
+        _save_findings(kept)
+        return {"cleared": True, "run_id": run_id, "remaining": len(kept)}
+    _save_findings([])
+    audit("findings_cleared", {})
+    return {"cleared": True}
+
+
+@app.get("/api/findings/export")
+def findings_export(fmt: str = "csv", run_id: str = "") -> Response:
+    """Export findings any time, as CSV (default) or JSON. Columns are dynamic — every key any
+    finding has becomes a column, so user-added fields export automatically."""
+    items = _load_findings()
+    if run_id:
+        items = [f for f in items if f.get("run_id") == run_id]
+    ts = int(datetime.now().timestamp())
+    if fmt.lower() == "json":
+        body = json.dumps({"findings": items, "columns": _finding_columns(items)}, indent=2)
+        return Response(content=body.encode("utf-8"), media_type="application/json",
+                        headers={"Content-Disposition": f'attachment; filename="findings_{ts}.json"'})
+    import csv, io
+    cols = _finding_columns(items)
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols, quoting=csv.QUOTE_ALL, extrasaction="ignore")
+    w.writeheader()
+    for f in items:
+        w.writerow({c: (", ".join(map(str, f[c])) if isinstance(f.get(c), list) else f.get(c, ""))
+                    for c in cols})
+    audit("findings_export", {"rows": len(items), "fmt": fmt})
+    return Response(content=buf.getvalue().encode("utf-8-sig"), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="findings_{ts}.csv"'})
 
 
 # ── Settings & "pick your crew" — read/write from the UI, no code edits ───────
