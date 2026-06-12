@@ -100,8 +100,11 @@ Commands (every action pauses for your next move — you are in the loop):
     pipeline                    show the default phase order + where you are
 
   TALK (live session — you are the manager directing the crew)
-    talk <message>              talk to the MANAGER (ASM); it answers from session context
-    talk @<agent> <message>     talk to a specific agent (osint recon auth vuln threat manager)
+    chat                        CONTINUOUS session: it waits for your reply after each answer
+    chat @<agent>               continuous session with a specific agent
+                                (inside: plain text = message · /run <phase> · /scope · /who · /exit)
+    talk <message>              one-shot message to the MANAGER (ASM)
+    talk @<agent> <message>     one-shot message to a specific agent (osint recon auth vuln threat manager)
     talk reset                  clear the conversation history
 
   MCP (use any connected MCP tool from here)
@@ -493,47 +496,23 @@ class Ops:
             print("  usage: flow new|add|save|list|run|show ...")
 
     # ── session ──────────────────────────────────────────────────────────────
-    def cmd_talk(self, args):
-        """Live conversation with your crew. You are the engagement lead/manager giving
-        direction; the agent answers using the current session context.
-            talk <message>            → talk to the MANAGER (ASM)
-            talk @recon <message>     → talk to a specific agent (osint/recon/auth/vuln/threat/manager)
-            talk reset                → clear the conversation history
-        """
-        if not args:
-            print("  usage: talk [<@agent>] <message>   (agents: manager osint recon auth vuln threat)")
-            print("         talk reset   — clear the conversation")
-            return
-        if args[0].lower() == "reset":
-            self.chat_history = []
-            print("  conversation cleared.")
-            return
+    # which short name maps to which agent builder
+    AGENT_MAP = {
+        "manager": "build_manager_agent", "osint": "build_osint_agent",
+        "recon": "build_recon_agent", "auth": "build_auth_agent",
+        "vuln": "build_vuln_agent", "threat": "build_threat_intel_agent",
+    }
 
-        agent_map = {
-            "manager": "build_manager_agent", "osint": "build_osint_agent",
-            "recon": "build_recon_agent", "auth": "build_auth_agent",
-            "vuln": "build_vuln_agent", "threat": "build_threat_intel_agent",
-        }
-        who = "manager"
-        if args[0].startswith("@"):
-            who = args[0][1:].lower()
-            args = args[1:]
-        message = " ".join(args).strip()
-        if not message:
-            print("  say something: talk <message>")
-            return
-        builder = agent_map.get(who)
+    def _talk_send(self, who, message):
+        """Send ONE message to <who>, grounded in session context + running history.
+        Appends both turns to chat_history and returns the agent's reply text.
+        Raises RuntimeError on any problem (no crewai/agent/key) so callers can recover."""
+        builder = self.AGENT_MAP.get(who)
         if not builder or not self.builders.get(builder):
-            print(f"  no '{who}' agent available (need crewai + {builder}). Try: talk <message>")
-            return
+            raise RuntimeError(f"no '{who}' agent available (need crewai + {builder}).")
+        llm = self._get_llm()   # may raise (caught by caller); never exits the console
 
-        try:
-            llm = self._get_llm()
-        except Exception as e:
-            print(f"  [err] {e}")
-            return
-
-        # Build a compact session digest so the agent answers grounded in what we have.
+        # Compact session digest so the agent answers grounded in what we have.
         digest = f"Scope: {self.scope_query or '(unset)'} | Target: {self.target_org or '(unset)'}\n"
         if self.outputs:
             digest += "Collected so far:\n"
@@ -558,16 +537,149 @@ class Ops:
             agent=ag,
         )
         print(f"\n  …{who} is thinking…")
-        try:
-            reply = self._run_phase_crew(ag, [task])
-        except Exception as e:
-            print(f"  [err] {who}: {e}")
-            return
-        reply = str(reply).strip()
+        reply = str(self._run_phase_crew(ag, [task])).strip()
         self.chat_history.append(("Lead", message))
         self.chat_history.append((who, reply))
-        print(f"\n  [{who}]\n  " + reply[:2000].replace("\n", "\n  "))
-        print("\n  → keep talking (talk <msg>), or run a phase to act on it.")
+        return reply
+
+    def _print_reply(self, who, reply):
+        print(f"\n  [{who}]\n  " + reply.replace("\n", "\n  "))
+
+    def cmd_talk(self, args):
+        """One-shot message to the crew (use `chat` for a continuous back-and-forth).
+            talk <message>            → talk to the MANAGER (ASM)
+            talk @recon <message>     → talk to a specific agent
+            talk reset                → clear the conversation history
+        """
+        if not args:
+            print("  usage: talk [<@agent>] <message>   (agents: manager osint recon auth vuln threat)")
+            print("         talk reset   — clear the conversation")
+            print("         tip: 'chat' opens a continuous session that waits for your replies")
+            return
+        if args[0].lower() == "reset":
+            self.chat_history = []
+            print("  conversation cleared.")
+            return
+        who = "manager"
+        if args[0].startswith("@"):
+            who = args[0][1:].lower()
+            args = args[1:]
+        message = " ".join(args).strip()
+        if not message:
+            print("  say something: talk <message>")
+            return
+        if who not in self.AGENT_MAP:
+            print(f"  unknown agent '{who}'. agents: " + " ".join(self.AGENT_MAP))
+            return
+        try:
+            reply = self._talk_send(who, message)
+        except Exception as e:
+            print(f"  [err] {e}")
+            return
+        self._print_reply(who, reply)
+        print("\n  → keep talking (talk <msg>), 'chat' for a continuous session, "
+              "or run a phase to act on it.")
+
+    def cmd_chat(self, args):
+        """Continuous, interactive NLP session with an agent. After each reply it WAITS for
+        your next message — plain text is sent to the agent, only /-commands are parsed.
+            chat                 → continuous session with the MANAGER
+            chat @osint          → continuous session with a specific agent
+        Inside chat:
+            <plain text>         → message to the current agent
+            @osint <text>        → send one message to another agent
+            @osint               → switch the current agent
+            /run <phase>         → run a phase to ACT on the discussion
+            /scope  /reset  /who <agent>  /help  /exit
+        """
+        who = "manager"
+        if args and args[0].startswith("@"):
+            who = args[0][1:].lower()
+        if who not in self.AGENT_MAP:
+            print(f"  unknown agent '{who}'. agents: " + " ".join(self.AGENT_MAP))
+            return
+        # Preflight ONCE so we don't enter the loop only to fail on every line.
+        builder = self.AGENT_MAP.get(who)
+        if not self.builders.get(builder):
+            print(f"  no '{who}' agent available (need crewai + {builder}).")
+            return
+        try:
+            self._get_llm()
+        except Exception as e:
+            print(f"  [err] {e}")
+            return
+
+        print(f"\n  ┌─ chat with {who} — I'll wait for your reply after each answer.")
+        print(  "  │  plain text = message   @<agent> = redirect   /run <phase> = act")
+        print(  "  │  /scope  /reset  /who <agent>  /help  /exit")
+        print(  "  └─ (one-shot 'talk' still works outside chat)\n")
+
+        while True:
+            try:
+                line = input(f"  {who}\u203a ").strip()    # waits here for YOUR input
+            except (EOFError, KeyboardInterrupt):
+                print("\n  leaving chat.")
+                return
+            if not line:
+                continue
+
+            # /-commands
+            if line.startswith("/"):
+                p = line[1:].split()
+                c = p[0].lower() if p else ""
+                rest = p[1:]
+                if c in ("exit", "quit", "q", "leave", "bye"):
+                    print("  leaving chat.")
+                    return
+                if c in ("help", "?"):
+                    print("  plain text = message · @<agent> redirect · /run <phase> · "
+                          "/scope · /reset · /who <agent> · /exit")
+                    continue
+                if c == "reset":
+                    self.chat_history = []
+                    print("  conversation cleared.")
+                    continue
+                if c == "scope":
+                    self.cmd_scope([])
+                    continue
+                if c == "run":
+                    if not rest:
+                        print("  usage: /run <phase>  (osint recon reconcile nmap auth vuln threat report)")
+                    else:
+                        self.cmd_run(rest)
+                    continue
+                if c in ("who", "agent"):
+                    if rest and rest[0].lstrip("@").lower() in self.AGENT_MAP:
+                        who = rest[0].lstrip("@").lower()
+                        print(f"  now talking to {who}.")
+                    else:
+                        print(f"  agents: " + " ".join(self.AGENT_MAP))
+                    continue
+                print(f"  unknown chat command '/{c}' — try /help")
+                continue
+
+            # @agent redirect / switch
+            target, msg = who, line
+            if line.startswith("@"):
+                toks = line.split(None, 1)
+                cand = toks[0][1:].lower()
+                if cand in self.AGENT_MAP:
+                    if len(toks) == 1:                 # bare "@osint" → switch default
+                        who = cand
+                        print(f"  now talking to {who}.")
+                        continue
+                    target, msg = cand, toks[1]        # "@osint <text>" → one message there
+                else:
+                    print(f"  unknown agent '{cand}'. agents: " + " ".join(self.AGENT_MAP))
+                    continue
+
+            try:
+                reply = self._talk_send(target, msg)
+            except Exception as e:
+                print(f"  [err] {target}: {e}")
+                continue
+            self._print_reply(target, reply)
+            # loop returns to the prompt and WAITS for your next message
 
     def cmd_state(self, args):
         if not self.outputs:
@@ -628,7 +740,7 @@ class Ops:
             "run": self.cmd_run, "step": self.cmd_step, "pipeline": self.cmd_pipeline,
             "mcp": self.cmd_mcp, "flow": self.cmd_flow, "state": self.cmd_state,
             "next": self.cmd_next, "set": self.cmd_set, "save": self.cmd_save,
-            "talk": self.cmd_talk, "ask": self.cmd_talk,
+            "talk": self.cmd_talk, "ask": self.cmd_talk, "chat": self.cmd_chat,
             "help": lambda a: print(HELP),
         }
         if cmd in ("quit", "exit"):
