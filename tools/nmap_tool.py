@@ -3,8 +3,9 @@ tools/nmap_tool.py — Nmap as a CrewAI tool (skill, not an agent)
 
 Used by the Recon agent to confirm hosts are live and get OS/service details.
 Stealthy by default: SYN scan, T2 timing, top-100 ports.
-Requires: nmap binary on PATH + admin/root privileges on Windows.
+Requires: nmap binary installed (auto-located) + admin/root privileges on Windows.
 Disable: set ENABLE_NMAP=0
+Override path: set NMAP_PATH=C:\\Program Files (x86)\\Nmap\\nmap.exe
 """
 from __future__ import annotations
 import os, json, subprocess, shutil, socket, ipaddress
@@ -12,20 +13,78 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
 ENABLE_NMAP = os.environ.get("ENABLE_NMAP", "1").strip() == "1"
-_nmap_bin = shutil.which("nmap") or shutil.which("nmap.exe")
 
 
-def _nmap_available() -> bool:
-    if not ENABLE_NMAP:
-        return False
-    if not _nmap_bin:
-        return False
-    # Quick sanity check
+# ── Self-locating nmap resolver ───────────────────────────────────────────────
+# Don't trust a single shutil.which() at import time — on Windows the Python
+# process's PATH often differs from the shell's (so `where.exe nmap` works but
+# shutil.which returns None). Instead the agent locates nmap itself: an explicit
+# NMAP_PATH override, then PATH, then the standard install locations, validating
+# each candidate by actually running `--version`. Resolution is cached on success
+# and retried lazily at call time (a PATH that wasn't ready at import still works).
+_NMAP_BIN_CACHE: str | None = None
+
+
+def _candidate_nmap_paths() -> list[str]:
+    cands: list[str] = []
+    env = os.environ.get("NMAP_PATH", "").strip().strip('"')
+    if env:
+        cands.append(env)
+    w = shutil.which("nmap") or shutil.which("nmap.exe")
+    if w:
+        cands.append(w)
+    # Standard Windows install locations (32-bit installer → Program Files (x86))
+    cands += [
+        r"C:\Program Files (x86)\Nmap\nmap.exe",
+        r"C:\Program Files\Nmap\nmap.exe",
+    ]
+    # Common POSIX locations
+    cands += [
+        "/usr/bin/nmap", "/usr/local/bin/nmap",
+        "/opt/homebrew/bin/nmap", "/snap/bin/nmap",
+    ]
+    seen, out = set(), []
+    for c in cands:
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def _validate_nmap(path: str) -> bool:
     try:
-        r = subprocess.run([_nmap_bin, "--version"], capture_output=True, timeout=5)
+        r = subprocess.run([path, "--version"], capture_output=True, timeout=5)
         return r.returncode == 0
     except Exception:
         return False
+
+
+def _resolve_nmap() -> str | None:
+    """Return a working nmap path, or None. Caches the first success; retries on miss."""
+    global _NMAP_BIN_CACHE
+    if _NMAP_BIN_CACHE:
+        return _NMAP_BIN_CACHE
+    for cand in _candidate_nmap_paths():
+        # a bare absolute path that exists, or a name resolvable on PATH
+        if (os.path.isfile(cand) or shutil.which(cand)) and _validate_nmap(cand):
+            _NMAP_BIN_CACHE = cand
+            return cand
+    return None
+
+
+# Resolve once at import for the startup banner; tools/_nmap_available re-resolve lazily.
+_nmap_bin = _resolve_nmap()
+
+
+def _nmap_available() -> bool:
+    global _nmap_bin
+    if not ENABLE_NMAP:
+        return False
+    if not _nmap_bin:
+        _nmap_bin = _resolve_nmap()   # lazy retry — PATH may not have been ready at import
+    if not _nmap_bin:
+        return False
+    return _validate_nmap(_nmap_bin)
 
 
 def _is_private(ip: str) -> bool:
@@ -46,7 +105,7 @@ class NmapScanTool(BaseTool):
         "Confirm hosts are live and get open ports/services via nmap. "
         "Stealthy by default (SYN scan, T2). Max 10 IPs per call. "
         "Returns live hosts with ports and service info. "
-        "Requires nmap binary on PATH and admin/root privileges. "
+        "Requires nmap binary installed and admin/root privileges. "
         "Returns error if ENABLE_NMAP=0 or nmap not installed."
     )
     args_schema: type = NmapScanInput
@@ -62,9 +121,10 @@ class NmapScanTool(BaseTool):
             return json.dumps({
                 "status": "nmap_not_found",
                 "note": (
-                    "nmap binary not found on PATH. "
+                    "nmap binary not found. "
                     "Windows: choco install nmap OR https://nmap.org/download.html "
                     "Run as Administrator for SYN scans. "
+                    "Set NMAP_PATH to the nmap.exe location to override. "
                     "Set ENABLE_NMAP=0 to disable this tool."
                 ),
             })
@@ -192,7 +252,7 @@ class NmapDiscoveryTool(BaseTool):
                                "note": "Set ENABLE_NMAP=1 to enable nmap scans."})
         if not _nmap_available():
             return json.dumps({"status": "nmap_not_found",
-                               "note": "Install nmap and add to PATH. Run as Administrator for SYN scans."})
+                               "note": "Install nmap or set NMAP_PATH. Run as Administrator for SYN scans."})
 
         # Hard limit: cap per-call at 10, filter already-scanned IPs
         ips = [str(ip).strip() for ip in ips[:10] if str(ip).strip()]
@@ -454,23 +514,18 @@ def get_nmap_tools() -> list:
         return []
     if not _nmap_available():
         print(
-            "[NMAP] WARNING: binary not found on PATH or version check failed.\n"
+            "[NMAP] WARNING: nmap could not be located or did not respond to --version.\n"
             "\n"
-            "  SETUP INSTRUCTIONS:\n"
-            "  Windows (run PowerShell as Administrator):\n"
-            "    choco install nmap          # if you have Chocolatey\n"
-            "    -- OR --\n"
-            "    Download from https://nmap.org/download.html\n"
-            "    Install the .exe, tick 'Add to PATH'\n"
-            "    Then REOPEN your terminal as Administrator\n"
+            "  The agent auto-searched: NMAP_PATH, your PATH, and the standard install\n"
+            "  locations (C:\\Program Files (x86)\\Nmap\\nmap.exe, C:\\Program Files\\Nmap,\n"
+            "  /usr/bin, /usr/local/bin, /opt/homebrew/bin, /snap/bin).\n"
             "\n"
-            "  Linux / WSL:\n"
-            "    sudo apt install nmap\n"
+            "  SETUP / FIX:\n"
+            "  Windows : install from https://nmap.org/download.html (tick 'Add to PATH'),\n"
+            "            or point us straight at it:  set NMAP_PATH=C:\\Program Files (x86)\\Nmap\\nmap.exe\n"
+            "  Linux   : sudo apt install nmap        macOS: brew install nmap\n"
             "\n"
-            "  macOS:\n"
-            "    brew install nmap\n"
-            "\n"
-            "  After install, verify with: nmap --version\n"
+            "  Verify with: nmap --version\n"
             "  SYN scans (-sS) require Administrator / sudo on all platforms.\n"
             "  Set ENABLE_NMAP=0 to suppress this warning.\n"
         )
