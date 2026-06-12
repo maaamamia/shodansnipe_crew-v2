@@ -201,7 +201,7 @@ class SetScopeInput(BaseModel):
         "  • CIDR:      203.0.113.0/24\n"
         "  • ASN:       AS64512\n"
         "  • Domain:    acme.example\n"
-        "Example: 'Dell, dell.com, AS714'"
+        "Example: 'test, test.com, AS111'"
     ))
 
 
