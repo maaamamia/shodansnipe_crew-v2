@@ -281,6 +281,20 @@ class HuntPlanTool(BaseTool):
                 ),
                 "prioritize": ["VPN/Citrix/RDP", "CI/CD (Jenkins/GitLab)", "databases", "K8s/Docker"],
                 "infra_pivot_queries": expansions.get("infra_patterns", []),
+                "fingerprint_pivots": [
+                    "http.favicon.hash:<hash>  — same favicon = same app/clone (find forgotten copies)",
+                    "http.html_hash:<hash>     — identical page body across hosts (staging/mirrors)",
+                    "ssl.cert.serial:<serial>  — reused cert = sibling/origin infra",
+                    "jarm:<jarm>               — same TLS stack fingerprint (origin behind CDN)",
+                ],
+                "fingerprint_pivot_rule": (
+                    "Derive these from hosts ALREADY confirmed in-scope, then pivot. IMPORTANT: a "
+                    "pivot that returns a HUGE result set means the fingerprint is GENERIC/shared "
+                    "(a common favicon, a default cert, a popular JARM) — that is a signal to "
+                    "ANALYZE and cross-reference (intersect with scope anchors / cert CN / org), "
+                    "NOT to exclude the pivot or drop the hosts. Tighten, don't discard. A pivot "
+                    "with a small, specific result set is high-confidence sibling infrastructure."
+                ),
             },
             "auth_directives": {
                 "focus_on": [
@@ -442,12 +456,23 @@ STEPS:
 1. AUTHORITATIVE SCOPE: from the data, state the confirmed in-scope set — hosts/domains/CIDRs
    that BOTH tie to the org AND were actually observed. Keep ASN-expanded assets separate.
    You are the FINAL scope authority here — OSINT only PROPOSED; you decide with the fuller
-   picture (OSINT + Recon + Nmap). For any CONTESTED or borderline asset, call scope_advisor
-   (action='advise') with the evidence you now hold (rdap_org / cert_cn / hostnames /
-   scope_domains / scope_orgs / in_confirmed_cidr) and let the EVIDENCE decide — never a name
-   convention. You may OVERRIDE an OSINT verdict when Recon/Nmap give you evidence OSINT lacked
-   (e.g. Recon confirmed a host OSINT marked 'verify', or a lead OSINT included never resolved).
-   Anything the advisor returns 'verify' that you can't yet resolve goes into gaps, not rejected.
+   picture (OSINT + Recon + Nmap).
+2. EVIDENCE PASS — RE-RUN THE ADVISOR (MANDATORY, not optional): you MUST call scope_advisor
+   (action='advise') for EVERY host in the RECON/NMAP output whose scope status is not already
+   beyond doubt — do not eyeball it, and do not rely on the up-front OSINT advice (that was made
+   WITHOUT this evidence). Build each advise call from the fields you can read above:
+     • candidate         = the host IP or hostname
+     • rdap_org          = the host's "org" / "asn_name" from Recon
+     • cert_cn           = the host's "ssl_subject" / cert CN from Recon
+     • hostnames         = the host's "hostnames" (comma-separated)
+     • scope_domains     = the engagement domain(s); scope_orgs = the engagement org(s)
+     • in_confirmed_cidr / in_confirmed_asn = true if the IP falls in a confirmed net:/asn:
+   Use NMAP as live evidence: a host Nmap shows UP with open ports is confirmed live; a host
+   Nmap shows DOWN (or that Recon saw but Nmap couldn't confirm) is NOT live — push it to gaps,
+   don't count it as an active exposure. Take the advisor's include/verify/exclude verdict as the
+   ruling. You MAY OVERRIDE an OSINT verdict when Recon/Nmap give evidence OSINT lacked (Recon
+   confirmed a host OSINT marked 'verify'; an OSINT 'include' lead never resolved). Anything the
+   advisor returns 'verify' that you still can't resolve goes to gaps — never silently rejected.
 2. REJECT false leads: OSINT guesses (incl. candidate_alt_domains_unverified) that did NOT
    resolve or did NOT tie to the org — list them as rejected, with the reason. Reject only on
    positive contrary evidence, not on a name that "doesn't look like" the org.
@@ -458,6 +483,16 @@ STEPS:
    - unconfirmed_high_value: high-risk hosts seen but not version/auth-confirmed.
 4. REFINED QUERIES: a SHORT, tight list (max 10) of scope-anchored Shodan queries that would
    close the biggest gaps. Anchor each to net:/asn:/cert CN — no broad org-only queries.
+   - First call scope_advisor (action='expand') with the CURRENT confirmed scope (org, each
+     confirmed cidr, observed products) to regenerate the combinatorial candidate set against
+     what you now know, and pull the highest-value gap-closers from it.
+   - INCLUDE at least one creative FINGERPRINT pivot derived from a CONFIRMED in-scope host:
+     http.favicon.hash:, http.html_hash:, ssl.cert.serial:, or jarm: — these find forgotten
+     origins, clones, and CDN-bypassed origins that name/port queries miss.
+   - HIGH-COUNT RULE: if a fingerprint pivot would return a very large set, that means the
+     fingerprint is GENERIC/shared — ANALYZE it (intersect with a scope anchor / cert CN / org),
+     do NOT exclude the pivot or the hosts. Tighten the query; never drop it. A small, specific
+     result set is high-confidence sibling infrastructure.
 
 OUTPUT as JSON:
 {{
