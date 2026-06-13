@@ -98,3 +98,46 @@ If any of these appear, their control planes become part of the primary map. Do 
 
 ═══════════════════════════════════════════════════════════
 """
+def query_cheatsheet() -> str:
+    """Compact Shodan filter vocabulary + proven query patterns, built LIVE from the deployed
+    query_advisor schema (FILTER_REFERENCE + TEMPLATES). Injected into the discovery agents so
+    they build from the full filter set and known-good patterns instead of freelancing a handful
+    of filters. Returns '' if query_advisor isn't importable (degrades gracefully). This is a
+    VOCABULARY to discover WITH — never a restriction on what to look for."""
+    mod = None
+    for path in ("query_advisor", "core.query_advisor"):
+        try:
+            mod = __import__(path, fromlist=["FILTER_REFERENCE", "TEMPLATES"])
+            break
+        except Exception:
+            continue
+    if mod is None:
+        return ""
+    try:
+        filters = list(getattr(mod, "FILTER_REFERENCE", []) or [])
+        templates = list(getattr(mod, "TEMPLATES", []) or [])
+        # Filters grouped by category, one compact line per category.
+        by_cat: dict[str, list[str]] = {}
+        for f in filters:
+            cat = f.get("category", "Other")
+            syn = f.get("syntax", f.get("name", "")).strip()
+            tier = f.get("tier", "free")
+            label = syn + (" [paid]" if tier in ("paid", "enterprise") else "")
+            by_cat.setdefault(cat, []).append(label)
+        filt_lines = [f"  {cat}: " + " · ".join(items) for cat, items in by_cat.items()]
+        # Template titles grouped by category (patterns to adapt, not full queries — stay compact).
+        tpl_cat: dict[str, list[str]] = {}
+        for t in templates:
+            tpl_cat.setdefault(t.get("category", "Other"), []).append(t.get("title", t.get("id", "")))
+        tpl_lines = [f"  {cat}: " + ", ".join(titles) for cat, titles in tpl_cat.items()]
+        return (
+            "═══ SHODAN QUERY SCHEMA (use the RIGHT filters — many below are under-used) ═══\n"
+            "Filter vocabulary (anchor every query to scope; this is to discover WITH, not a limit):\n"
+            + "\n".join(filt_lines)
+            + "\nProven query patterns you can adapt (anchor to org/net/asn/cert):\n"
+            + "\n".join(tpl_lines)
+            + "\nDiscovery, not just confirmation: sweep filters/patterns the target hasn't shown yet "
+              "(favicon/cert-issuer/hassh/screenshot/component) to surface the unknown, then pivot on hits."
+        )
+    except Exception:
+        return ""

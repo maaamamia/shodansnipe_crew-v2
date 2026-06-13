@@ -185,12 +185,16 @@ def expand_queries(org: str = "", domain: str = "", cidrs: list[str] | None = No
                    products: list[str] | None = None, max_queries: int = 140) -> list[dict]:
     """Generate a BROAD, DYNAMIC, combinatorial Shodan query set from scope + observed data.
 
-    This is deliberately NOT a fixed list of easy queries. It cross-products every scope ANCHOR
-    (org / each CIDR) with every DIMENSION (port-groups, tech components, misconfig/exposure
-    signatures, observed products) to cover the combination space, then layers on the
-    high-value singleton pivots (cert-CN, exposed-origin-behind-CDN) and the query_advisor
-    template catalogue. The recon agent still adds fingerprint pivots (jarm / cert-serial /
-    favicon / html_hash) using the concrete seed values it observes at runtime.
+    DISCOVERY-FIRST with OBSERVED-PRIORITY. This is a discovery process, so the broad sweep
+    (port-groups, the full component battery, misconfig/exposure signatures) ALWAYS runs against
+    every scope anchor — that is how you surface the GitLab/Grafana/etc box recon has NOT seen yet.
+    Recon-observed products are ADDITIVE on top: they're promoted to HIGH priority (real, current,
+    version/CVE-seeded), and any static component recon already confirmed is tagged 'observed' and
+    bumped — but the unobserved components stay in the sweep as 'discovery' candidates. We never
+    restrict discovery to what is already known (that would only re-find the known). It also layers
+    on the high-value singleton pivots (cert-CN, exposed-origin-behind-CDN) and the query_advisor
+    templates; recon adds fingerprint pivots (jarm / cert-serial / favicon / html_hash) from the
+    concrete seed values it observes at runtime.
     """
     cidrs = cidrs or []
     products = products or []
@@ -222,15 +226,32 @@ def expand_queries(org: str = "", domain: str = "", cidrs: list[str] | None = No
     if domain and not anchors:               # domain-only scope still gets a matrix
         anchors.append((f"ssl.cert.subject.cn:{domain}", f"cert {domain}"))
 
+    # Observed-first PRIORITY, not a filter. Recon-observed products lead (real, current, HIGH),
+    # but this is DISCOVERY: the broad component/port/misconfig sweep ALWAYS runs to surface what
+    # recon has NOT seen yet. We never restrict the sweep to known products — that would only ever
+    # re-find the known and never discover the GitLab/Grafana/etc box nobody has hit yet. Observed
+    # products are ADDITIVE and promoted; the static battery stays for genuine discovery, and is
+    # marked 'observed' for components recon already confirmed so the agent knows which are real.
+    observed = [str(p).strip() for p in products if str(p).strip()]
+    obs_blob = " ".join(observed).lower()
+
     for a_q, a_label in anchors:
+        # 1) OBSERVED products FIRST — highest signal, current, actionable (recon-defined).
+        for p in observed[:12]:
+            add(f'{a_q} product:"{p}"', f"{a_label} × {p} (OBSERVED — version/CVE seed)", "HIGH")
+        # 2) Port-groups — signature-based discovery, broadly useful regardless of target.
         for grp, pg in _PORT_GROUPS.items():
             add(f"{a_q} {pg}", f"{a_label} × {grp} ports", "MEDIUM")
+        # 3) Components — FULL discovery sweep (find the unknown). Components recon already
+        #    confirmed are tagged 'observed' + bumped; the rest stay as discovery candidates.
         for comp in _COMPONENTS:
-            add(f'{a_q} http.component:"{comp}"', f"{a_label} × {comp} cohort", "MEDIUM")
+            if comp.lower() in obs_blob:
+                add(f'{a_q} http.component:"{comp}"', f"{a_label} × {comp} cohort [observed]", "HIGH")
+            else:
+                add(f'{a_q} http.component:"{comp}"', f"{a_label} × {comp} cohort [discovery]", "MEDIUM")
+        # 4) Misconfig / exposure signatures — always swept (discovery).
         for mq, why in _MISCONFIG:
             add(f"{a_q} {mq}", f"{a_label} × {why}", "MEDIUM")
-        for p in products[:8]:
-            add(f'{a_q} product:"{p}"', f"{a_label} × {p} (version/CVE seed)", "MEDIUM")
 
     # ── query_advisor template catalogue (org/domain-scoped only) ────────────
     for tpl in _load_templates():
