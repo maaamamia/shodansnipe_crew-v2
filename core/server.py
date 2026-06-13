@@ -2021,14 +2021,22 @@ async def llm_ask(body: dict = Body(...)) -> dict:
 @app.post("/api/llm/cve-intel")
 async def llm_cve_intel(body: dict = Body(...)) -> dict:
     """Extract CVEs from advisory text and generate scoped Shodan detection queries."""
+    import re as _re
     text       = (body.get("text") or "").strip()
     scope_data = body.get("scope") or {}
     scope_q    = scope_data.get("query", "") if isinstance(scope_data, dict) else ""
     if not text:
         return {"cve_ids": [], "queries": [], "error": "No text provided"}
+
+    # 1) Extract CVE IDs FIRST — pure regex on the INPUT, no LLM involved. This must always
+    #    succeed even if the AI step later fails, so a valid ID is never silently dropped.
+    #    Any 4-digit year (incl. 2026+), 4+ digit sequence, case-insensitive.
+    cve_ids = sorted({m.upper() for m in _re.findall(r'CVE-\d{4}-\d{4,}', text, _re.IGNORECASE)})
+
+    # 2) Generate detection queries via the LLM — best-effort, and isolated so a provider/key
+    #    failure NEVER zeroes out the CVEs extracted above.
     settings = llm.get_settings()
     provider = settings.get("provider", "ollama")
-    # Use goal_to_query with a CVE-focused prompt
     cve_prompt = (
         f"Analyze this security advisory and extract CVE IDs. "
         f"For each CVE, generate a Shodan query to detect vulnerable systems"
@@ -2036,14 +2044,20 @@ async def llm_cve_intel(body: dict = Body(...)) -> dict:
         f"Advisory:\n{text[:3000]}"
     )
     try:
-        import re as _re
         result = await llm.goal_to_query(cve_prompt, provider, tier=_current_tier)
-        cve_ids = _re.findall(r'CVE-\d{4}-\d+', text, _re.IGNORECASE)
-        queries = result if isinstance(result, list) else result.get("queries", []) if isinstance(result, dict) else []
-        return {"cve_ids": list(set(cve_ids)), "queries": queries}
+        queries = result if isinstance(result, list) else (
+            result.get("queries", []) if isinstance(result, dict) else [])
+        return {"cve_ids": cve_ids, "queries": queries}
     except Exception as e:
-        logger.error("llm/cve-intel error: %s", e)
-        return {"cve_ids": [], "queries": [], "error": str(e)}
+        logger.error("llm/cve-intel query-gen error: %s", e)
+        # Still return the CVE(s) we found; make clear it's the AI query step that failed,
+        # not CVE parsing — and point at the likely cause (LLM provider/key not configured).
+        return {
+            "cve_ids": cve_ids,
+            "queries": [],
+            "error": (f"Extracted {len(cve_ids)} CVE(s); detection-query generation failed "
+                      f"({provider} LLM): {e}. Set a working LLM provider/key in Config."),
+        }
 
 
 @app.post("/api/llm/selection")
