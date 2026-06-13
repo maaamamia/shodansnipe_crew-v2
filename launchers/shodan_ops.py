@@ -100,9 +100,11 @@ Commands (every action pauses for your next move — you are in the loop):
     pipeline                    show the default phase order + where you are
 
   TALK (live session — you are the manager directing the crew)
+    mission <objective>         MANAGER orchestrates: plans, dispatches agents, gate-keeps
+                                (mission auto|pick <objective> for full-plan / manager-picks modes)
     chat                        CONTINUOUS session: it waits for your reply after each answer
     chat @<agent>               continuous session with a specific agent
-                                (inside: plain text = message · /run <phase> · /scope · /who · /exit)
+                                (inside: plain text=msg · /mission · /run <phase> · /save · /who · /exit)
     talk <message>              one-shot message to the MANAGER (ASM)
     talk @<agent> <message>     one-shot message to a specific agent (osint recon auth vuln threat manager)
     talk reset                  clear the conversation history
@@ -526,14 +528,18 @@ class Ops:
         ag = self.builders[builder](llm)
         task = Task(
             description=(
-                "You are speaking LIVE with your engagement lead (the human acting as your "
-                "manager) in an authorized, scoped assessment. Answer their message directly and "
-                "concretely, grounded in the session context. Give your read, propose next moves, "
-                "or carry out the reasoning they ask for. Be specific and brief.\n\n"
+                "You are working LIVE with your engagement lead (the human acting as your "
+                "manager) in an authorized, scoped assessment. You think on the fly and ACT on "
+                "their command. If the request calls for discovery, USE YOUR TOOLS to actually "
+                "run the searches / enrichment / confirmation NOW — do not merely propose a plan "
+                "and hand it back. Stay anchored to scope (org:/net:/asn:/hostname:); never run "
+                "an unanchored, internet-wide query. After acting, report concisely WHAT YOU DID "
+                "and WHAT YOU FOUND (key hosts, ports, products, anomalies). If the lead is only "
+                "asking a question, answer it directly. Be specific and brief.\n\n"
                 f"=== SESSION CONTEXT ===\n{digest}\n"
                 f"=== CONVERSATION SO FAR ===\n{convo or '(start of conversation)'}\n"
                 f"=== LEAD'S MESSAGE ===\n{message}\n"),
-            expected_output="A direct, concrete reply to the lead — analysis and/or next steps.",
+            expected_output="What you did + what you found (or a direct answer), grounded in real tool results.",
             agent=ag,
         )
         print(f"\n  …{who} is thinking…")
@@ -544,6 +550,206 @@ class Ops:
 
     def _print_reply(self, who, reply):
         print(f"\n  [{who}]\n  " + reply.replace("\n", "\n  "))
+
+    # ── Manager as orchestrator + gatekeeper ─────────────────────────────────────
+    MISSION_AGENTS = ["osint", "recon", "nmap", "auth", "vuln", "threat"]
+
+    def _manager_plan(self, objective):
+        """MANAGER decides which specialists to engage for the mission, and in what order.
+        Returns a list of {agent, focus}; [] if it can't be parsed."""
+        from crewai import Task
+        ag = self.builders["build_manager_agent"](self._get_llm())
+        digest = f"Scope: {self.scope_query or '(unset)'} | Target: {self.target_org or '(unset)'}"
+        task = Task(
+            description=(
+                "You are the engagement MANAGER. The lead has given you a mission. Decide which "
+                "specialist agents to engage and in what order, with a one-line focus for each. "
+                "Available: osint, recon, nmap, auth, vuln, threat. Engage only what the mission "
+                "needs; respect dependencies (recon after osint; auth/vuln after recon).\n\n"
+                f"{digest}\nMISSION: {objective}\n\n"
+                'Respond ONLY with JSON: {"agents":[{"agent":"osint","focus":"..."}, ...]} — '
+                "no prose, no markdown fences."),
+            expected_output='JSON {"agents":[{"agent":"...","focus":"..."}]}',
+            agent=ag)
+        try:
+            raw = str(self._run_phase_crew(ag, [task])).strip()
+            raw = raw[raw.find("{"): raw.rfind("}") + 1]
+            data = json.loads(raw)
+            out = []
+            for a in data.get("agents", []):
+                name = str(a.get("agent", "")).lower()
+                if name in self.MISSION_AGENTS:
+                    out.append({"agent": name, "focus": str(a.get("focus", ""))})
+            return out
+        except Exception:
+            return []
+
+    def _manager_gatekeep(self, objective, agent, output):
+        """MANAGER reviews a specialist's output against mission + scope and rules on what
+        passes, what to drop, and what's missing. Returns the ruling text."""
+        from crewai import Task
+        ag = self.builders["build_manager_agent"](self._get_llm())
+        digest = f"Scope: {self.scope_query or '(unset)'} | Target: {self.target_org or '(unset)'}"
+        task = Task(
+            description=(
+                "You are the engagement MANAGER and the GATEKEEPER — the final authority on scope. "
+                "Review the specialist output below against the mission and scope. State concisely: "
+                "what is CONFIRMED in-scope and PASSES, what to DROP (out-of-scope / CDN-shared / "
+                "unverified), and what is MISSING that warrants another pass. Be decisive.\n\n"
+                f"{digest}\nMISSION: {objective}\nAGENT: {agent}\n\nOUTPUT:\n{str(output)[:6000]}\n"),
+            expected_output="Gatekeeper ruling: passes / drop / missing.",
+            agent=ag)
+        try:
+            return str(self._run_phase_crew(ag, [task])).strip()
+        except Exception as e:
+            return f"(gatekeeper unavailable: {e})"
+
+    def cmd_mission(self, args):
+        """Manager-orchestrated mission. You give the objective; the MANAGER plans which agents to
+        engage, dispatches them, and gate-keeps every result. You can override at each gate.
+            mission <objective>          → GATE: pause + override before each agent (default)
+            mission auto <objective>     → run the manager's full plan, no pausing
+            mission pick <objective>     → manager picks the subset and runs it
+        """
+        if not args:
+            print("  usage: mission [auto|pick] <objective>")
+            return
+        mode = "gate"
+        if args and args[0].lower() in ("auto", "pick", "gate"):
+            mode = args[0].lower()
+            args = args[1:]
+        objective = " ".join(args).strip()
+        if not objective:
+            print("  give an objective: mission <what you want done>")
+            return
+        try:
+            self._get_llm()
+        except Exception as e:
+            print(f"  [err] {e}")
+            return
+        if not self.builders.get("build_manager_agent"):
+            print("  no manager agent available (need crewai + build_manager_agent).")
+            return
+
+        print(f"\n  …manager planning the mission…")
+        plan = self._manager_plan(objective)
+        if not plan:
+            plan = [{"agent": a, "focus": ""} for a in self.MISSION_AGENTS]
+            print("  (couldn't parse a plan — falling back to the full chain)")
+        print(f"\n  ┌─ MISSION [{mode}]: {objective}")
+        print(  "  │  manager's dispatch plan:")
+        for i, step in enumerate(plan, 1):
+            f = (" — " + step["focus"]) if step.get("focus") else ""
+            print(f"  │   {i}. {step['agent']:<7}{f}")
+        print(  "  └─ manager gate-keeps each result; you can override.\n")
+
+        for step in plan:
+            agent = step.get("agent", "").lower()
+            if agent not in self.MISSION_AGENTS:
+                continue
+            focus = step.get("focus", "")
+            if mode == "gate":
+                ans = input(f"  engage {agent}? [y]es / [s]kip / [o]verride focus: ").strip().lower()
+                if ans.startswith("s"):
+                    print(f"    skipped {agent}.")
+                    continue
+                if ans.startswith("o"):
+                    nf = input("    new focus: ").strip()
+                    if nf:
+                        focus = nf
+                        self.chat_history.append(("Lead (focus)", f"[{agent}] {nf}"))
+            print(f"  …{agent} engaging{(' — ' + focus) if focus else ''}…")
+            try:
+                out = self._run_named_phase(agent)
+            except Exception as e:
+                print(f"    [err] {agent}: {e}")
+                continue
+            if out is None:
+                print(f"    {agent} produced nothing (agent not loaded?).")
+                continue
+            self.outputs[agent] = out
+            print(f"    {agent} done ({len(out)} chars).")
+            ruling = self._manager_gatekeep(objective, agent, out)
+            print("    [gatekeeper] " + ruling[:700].replace("\n", "\n      "))
+            if mode == "gate":
+                ov = input("    accept manager's call? [y]es / [o]verride: ").strip().lower()
+                if ov.startswith("o"):
+                    note = input("    your ruling: ").strip()
+                    if note:
+                        self.chat_history.append(("Lead (override)", f"[{agent}] {note}"))
+                        print("    ✎ override recorded.")
+
+        print("\n  …manager correlating the mission…")
+        combined = "\n".join(f"{k}:\n{v[:800]}" for k, v in self.outputs.items()
+                             if k in self.MISSION_AGENTS)
+        wrap = self._manager_gatekeep(objective, "ALL", combined or "(no agent output)")
+        print("  [manager]\n  " + wrap[:1500].replace("\n", "\n  "))
+        print("\n  → /save to commit this mission to the engagement + report, or keep going.")
+
+    def _ensure_run(self):
+        """Register this interactive session as an engagement run ONCE, so saved findings have
+        something to attach to and it shows up in the same run history as batch runs. Returns
+        the run id (or None if the server is unreachable)."""
+        if getattr(self, "run_id", None):
+            return self.run_id
+        try:
+            d = self._post("/api/runs", {
+                "target": self.target_org or "",
+                "scope": self.scope_query or "",
+                "source": "shodan-ops-chat",
+                "status": "interactive",
+                "mode": "hitl",
+            })
+            self.run_id = (d or {}).get("recorded", {}).get("id") or (d or {}).get("id")
+        except Exception:
+            self.run_id = None
+        return self.run_id
+
+    def _save_engagement(self, who):
+        """Commit what the chat session has discovered into the engagement: the hosts the agent
+        actually searched (pulled from the server's current results — already in the main DB via
+        search history) plus a session note capturing the agent's latest analysis. Everything is
+        tagged with this run's id and source='chat', so the standard report / findings export
+        picks it up. Returns (host_count, ok)."""
+        run_id = self._ensure_run()
+        findings = []
+        # 1) hosts the agent searched this session (server holds them; they're already in history)
+        try:
+            res = self._get("/api/results")
+            hosts = res.get("results", res) if isinstance(res, dict) else res
+            for h in (hosts or [])[:200]:
+                if not isinstance(h, dict):
+                    continue
+                findings.append({
+                    "run_id": run_id, "source": "chat", "agent": who,
+                    "asset": h.get("ip_str") or h.get("ip"),
+                    "ports": h.get("ports"),
+                    "product": h.get("product"),
+                    "org": h.get("org"),
+                    "hostnames": (h.get("hostnames") or [])[:5],
+                    "risk": h.get("risk_level"),
+                    "cdn_shared": h.get("cdn_shared", False),
+                    "in_scope": h.get("in_scope"),
+                    "scope_reason": h.get("scope_reason"),
+                })
+        except Exception:
+            pass
+        # 2) a session note: the agent's latest analysis, so the engagement keeps the reasoning
+        last = next((t for s, t in reversed(self.chat_history) if s == who), "")
+        if last:
+            findings.append({
+                "run_id": run_id, "source": "chat-note", "agent": who,
+                "title": f"Analyst-directed note ({who})",
+                "evidence": last[:4000],
+                "scope": self.scope_query or "",
+            })
+        if not findings:
+            return (0, False)
+        try:
+            self._post("/api/findings", {"findings": findings})
+            return (sum(1 for f in findings if f.get("source") == "chat"), True)
+        except Exception:
+            return (0, False)
 
     def cmd_talk(self, args):
         """One-shot message to the crew (use `chat` for a continuous back-and-forth).
@@ -611,8 +817,8 @@ class Ops:
 
         print(f"\n  ┌─ chat with {who} — I'll wait for your reply after each answer.")
         print(  "  │  plain text = message   @<agent> = redirect   /run <phase> = act")
-        print(  "  │  /scope  /reset  /who <agent>  /help  /exit")
-        print(  "  └─ (one-shot 'talk' still works outside chat)\n")
+        print(  "  │  /save = commit findings to the engagement + report   /scope  /reset  /who  /exit")
+        print(  "  └─ (actions run live; nothing enters the report until you /save)\n")
 
         while True:
             try:
@@ -632,8 +838,26 @@ class Ops:
                     print("  leaving chat.")
                     return
                 if c in ("help", "?"):
-                    print("  plain text = message · @<agent> redirect · /run <phase> · "
-                          "/scope · /reset · /who <agent> · /exit")
+                    print("  plain text = message · @<agent> redirect · /mission <obj> · "
+                          "/run <phase> · /save · /scope · /reset · /who <agent> · /exit")
+                    continue
+                if c == "mission":
+                    if not rest:
+                        print("  usage: /mission [auto|pick] <objective>  "
+                              "(manager plans, dispatches agents, gate-keeps)")
+                    else:
+                        self.cmd_mission(rest)
+                    continue
+                if c == "save":
+                    print("  …committing this session to the engagement…")
+                    n, ok = self._save_engagement(who)
+                    if ok:
+                        print(f"  ✓ saved {n} host finding(s) + session note to engagement "
+                              f"{self.run_id or '(run)'} — will appear in the standard report / "
+                              "findings export.")
+                    else:
+                        print("  nothing to save yet (run a search/discovery in chat first), "
+                              "or the server is unreachable.")
                     continue
                 if c == "reset":
                     self.chat_history = []
@@ -741,6 +965,7 @@ class Ops:
             "mcp": self.cmd_mcp, "flow": self.cmd_flow, "state": self.cmd_state,
             "next": self.cmd_next, "set": self.cmd_set, "save": self.cmd_save,
             "talk": self.cmd_talk, "ask": self.cmd_talk, "chat": self.cmd_chat,
+            "mission": self.cmd_mission,
             "help": lambda a: print(HELP),
         }
         if cmd in ("quit", "exit"):
