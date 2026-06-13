@@ -2022,7 +2022,7 @@ async def llm_ask(body: dict = Body(...)) -> dict:
 async def llm_cve_intel(body: dict = Body(...)) -> dict:
     """Extract CVEs from advisory text and generate scoped Shodan detection queries."""
     import re as _re
-    text       = (body.get("text") or "").strip()
+    text       = (body.get("text") or body.get("advisory") or "").strip()
     scope_data = body.get("scope") or {}
     scope_q    = scope_data.get("query", "") if isinstance(scope_data, dict) else ""
     if not text:
@@ -2037,17 +2037,66 @@ async def llm_cve_intel(body: dict = Body(...)) -> dict:
     #    failure NEVER zeroes out the CVEs extracted above.
     settings = llm.get_settings()
     provider = settings.get("provider", "ollama")
-    cve_prompt = (
-        f"Analyze this security advisory and extract CVE IDs. "
-        f"For each CVE, generate a Shodan query to detect vulnerable systems"
-        f"{' within scope: ' + scope_q if scope_q else ''}. "
-        f"Advisory:\n{text[:3000]}"
-    )
+
+    def _flatten_queries(result) -> list:
+        """Normalize whatever the LLM layer returns into a list of query dicts.
+        Handles: a bare list; {"queries": [...]} (dedicated cve_intel shape); and
+        goal_to_query's {"query","rationale","alternatives"} shape — the last of which the
+        old parser silently dropped (it only read "queries"), which is why diversity vanished."""
+        if isinstance(result, list):
+            return result
+        if not isinstance(result, dict):
+            return []
+        if result.get("queries"):
+            return result["queries"]
+        out = []
+        if result.get("query"):
+            out.append({"query": result["query"], "rationale": result.get("rationale", "")})
+        for alt in result.get("alternatives", []) or []:
+            if isinstance(alt, dict) and alt.get("query"):
+                out.append(alt)
+            elif isinstance(alt, str) and alt.strip():
+                out.append({"query": alt.strip(), "rationale": ""})
+        return out
+
     try:
+        # PREFERRED: the dedicated diverse generator (rich, multi-angle, returns {cve_ids,queries}).
+        # This is the path that produced the diverse query sets; use it when llm.py still exposes it.
+        if hasattr(llm, "cve_intel"):
+            res = llm.cve_intel(text[:3000], scope_query=scope_q)
+            if __import__("inspect").isawaitable(res):
+                res = await res
+            if isinstance(res, dict):
+                qs = _flatten_queries(res)
+                return {"cve_ids": res.get("cve_ids") or cve_ids, "queries": qs}
+            return {"cve_ids": cve_ids, "queries": _flatten_queries(res)}
+
+        # FALLBACK: drive goal_to_query with a diversity-forcing prompt, then flatten its
+        # query+alternatives shape correctly (the bug was reading a non-existent "queries" key).
+        cve_prompt = (
+            "You are generating Shodan DETECTION queries from a vulnerability advisory. First "
+            "identify the affected product(s), framework(s), version(s), default/dev port(s), and "
+            "the vulnerability class. If the advisory is SPARSE (just an ID or one line), REASON "
+            "from the product name and vuln class using how that product actually appears on "
+            "Shodan — do NOT return nothing just because NVD hasn't ingested the CVE yet.\n\n"
+            "Produce a DIVERSE set of 5-8 COMPLEMENTARY queries — each catching the exposure from a "
+            "DIFFERENT angle, never repeating the same filter. Put the strongest as the primary "
+            "query and the rest in 'alternatives'. Cover as many of these surfaces as apply:\n"
+            "  - product:\"...\"  (and version: when known)\n"
+            "  - http.component:\"...\"  (framework / CMS fingerprint)\n"
+            "  - banner/header angle: http.headers:\"x-powered-by: ...\" or server:\"...\"\n"
+            "  - http.title:\"...\"  (login / admin / panel titles)\n"
+            "  - http.html:\"...\"  (unique body markers, JS vars, error strings)\n"
+            "  - port:NNNN  (default AND common dev/container ports, e.g. 3000/8080/9000)\n"
+            "  - a PLAINTEXT-over-HTTP variant (port 80) mirroring any HTTPS query\n"
+            "  - http.favicon.hash / ssl.cert.subject.cn pivots where the product has a known one\n"
+            "  - vuln:CVE-XXXX (paid) AND a has_vuln:true fallback for free tier\n"
+            "Each query MUST be valid Shodan syntax with a concise rationale."
+            f"{' Scope EVERY query to: ' + scope_q if scope_q else ''}\n\n"
+            f"Advisory:\n{text[:3000]}"
+        )
         result = await llm.goal_to_query(cve_prompt, provider, tier=_current_tier)
-        queries = result if isinstance(result, list) else (
-            result.get("queries", []) if isinstance(result, dict) else [])
-        return {"cve_ids": cve_ids, "queries": queries}
+        return {"cve_ids": cve_ids, "queries": _flatten_queries(result)}
     except Exception as e:
         logger.error("llm/cve-intel query-gen error: %s", e)
         # Still return the CVE(s) we found; make clear it's the AI query step that failed,
